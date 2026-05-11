@@ -1,0 +1,39 @@
+previous_practices/
+planning/
+
+# Local Python environments
+.venv/
+venv/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python cache and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Experiment tracking and artifacts
+mlruns/
+mlflow.db
+artifacts/
+logs/
+models/
+
+# Generated datasets
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Monitoring runtime data
+monitoring/prometheus/data/
+monitoring/grafana/data/
+
+# OS/editor noise
+.DS_Store

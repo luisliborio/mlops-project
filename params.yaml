@@ -1,0 +1,76 @@
+project:
+  name: mlops-mnist-drift-lab
+  random_seed: 42
+  deployment_target: docker-compose
+  experiment_name: mnist-drift-lab
+  registered_model_name: mnist-digit-classifier
+
+data:
+  source:
+    dataset: mnist
+    loader: tensorflow.keras.datasets.mnist
+  baseline:
+    train_size: 10000
+    validation_size: 2000
+    test_size: 2000
+  future_batches:
+    clean_batch_a_size: 5000
+    clean_batch_b_size: 5000
+    drifted_inference_batch_size: 3000
+    noisy_retraining_batch_size: 5000
+  drift:
+    transforms:
+      - gaussian_noise
+      - gaussian_blur
+      - rotation
+      - contrast_shift
+    severity: medium
+  noisy_labels:
+    flip_fraction: 0.15
+
+model:
+  family: keras_cnn
+  image_shape: [28, 28, 1]
+  num_classes: 10
+  candidates:
+    - name: cnn_small
+      conv_filters: [16, 32]
+      dense_units: 64
+      dropout: 0.20
+    - name: cnn_medium
+      conv_filters: [32, 64]
+      dense_units: 128
+      dropout: 0.30
+
+monitoring:
+  system_metrics:
+    - request_count
+    - request_latency_seconds
+    - error_rate
+  model_metrics:
+    - rolling_accuracy
+    - macro_f1
+    - mean_prediction_confidence
+  data_metrics:
+    - predicted_class_distribution
+    - pixel_intensity_histogram_js_divergence
+  thresholds:
+    min_rolling_accuracy: 0.90
+    max_confidence_drop: 0.10
+    max_histogram_js_divergence: 0.15
+
+retraining:
+  min_recent_samples: 1000
+  acceptance:
+    min_accuracy_gain: 0.002
+    keep_production_on_failure: true
+
+mvp:
+  include:
+    - clean incremental retraining
+    - inference drift detection
+    - noisy-label challenger rejection
+  exclude:
+    - kubernetes
+    - out_of_distribution_detection
+    - cloud deployment
