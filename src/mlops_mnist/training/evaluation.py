@@ -1,0 +1,303 @@
+from __future__ import annotations
+
+import argparse
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import mlflow
+import mlflow.tensorflow
+import numpy as np
+import yaml
+from dotenv import dotenv_values
+from mlflow.tracking import MlflowClient
+from sklearn.metrics import accuracy_score, f1_score
+
+
+MODEL_ALIAS = "production"
+BASELINE_FREEZE_BATCHES = ["baseline_test", "clean_batch_a"]
+
+
+def load_project_params(params_path: str | Path) -> dict[str, Any]:
+    with Path(params_path).open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def evaluate_registered_model(
+    params_path: str | Path = "params.yaml",
+    batch_name: str | None = None,
+    batch_path: str | Path | None = None,
+    output_dir: str | Path = "artifacts/evaluation",
+    registered_model_name: str | None = None,
+    alias: str = MODEL_ALIAS,
+    max_samples: int | None = None,
+    use_clean_labels: bool = False,
+    freeze_baseline: bool = False,
+) -> dict[str, Any]:
+    # Evaluate the current production alias on one labeled batch or freeze a baseline snapshot.
+    params_path = Path(params_path).resolve()
+    repo_root = params_path.parent
+    params = load_project_params(params_path)
+    runtime_config = _load_runtime_config(repo_root)
+
+    tracking_uri = _resolve_tracking_uri(
+        repo_root,
+        runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
+    )
+    resolved_data_root = _resolve_path(
+        repo_root,
+        runtime_config.get("DATA_ROOT", "data"),
+    )
+    resolved_output_dir = _resolve_path(repo_root, output_dir)
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    resolved_model_name = registered_model_name or params["project"]["registered_model_name"]
+
+    mlflow.set_tracking_uri(tracking_uri)
+    client = MlflowClient()
+    version_info = client.get_model_version_by_alias(resolved_model_name, alias)
+    loaded_model = mlflow.tensorflow.load_model(f"models:/{resolved_model_name}@{alias}")
+
+    session_dir = resolved_output_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    batch_specs = _resolve_batch_specs(
+        data_root=resolved_data_root,
+        batch_name=batch_name,
+        batch_path=batch_path,
+        freeze_baseline=freeze_baseline,
+    )
+    batch_reports = []
+
+    for current_batch_name, current_batch_path in batch_specs:
+        batch_report = _evaluate_batch(
+            model=loaded_model,
+            batch_path=current_batch_path,
+            batch_name=current_batch_name,
+            max_samples=max_samples,
+            use_clean_labels=use_clean_labels,
+        )
+        batch_report.update(
+            {
+                "registered_model_name": resolved_model_name,
+                "alias": alias,
+                "model_version": str(version_info.version),
+                "source_training_run_id": version_info.tags.get("source_training_run_id"),
+                "source_candidate_name": version_info.tags.get("candidate_name"),
+                "tracking_uri": tracking_uri,
+            }
+        )
+
+        report_path = session_dir / f"{current_batch_name}_evaluation.json"
+        _write_json(report_path, batch_report)
+        batch_report["report_path"] = str(report_path.relative_to(repo_root))
+        batch_reports.append(batch_report)
+
+    summary_payload = {
+        "registered_model_name": resolved_model_name,
+        "alias": alias,
+        "model_version": str(version_info.version),
+        "source_training_run_id": version_info.tags.get("source_training_run_id"),
+        "source_candidate_name": version_info.tags.get("candidate_name"),
+        "tracking_uri": tracking_uri,
+        "freeze_baseline": freeze_baseline,
+        "reports": batch_reports,
+    }
+
+    summary_path = session_dir / (
+        "baseline_production_snapshot.json" if freeze_baseline else "evaluation_summary.json"
+    )
+    _write_json(summary_path, summary_payload)
+    summary_payload["summary_path"] = str(summary_path.relative_to(repo_root))
+    return summary_payload
+
+
+def run_training_registry_smoke(
+    params_path: str | Path = "params.yaml",
+    summary_path: str | Path | None = None,
+    output_dir: str | Path = "artifacts/smoke",
+    max_samples: int = 32,
+) -> dict[str, Any]:
+    # Minimal smoke check: latest training summary exists and the production alias can score a small batch.
+    params_path = Path(params_path).resolve()
+    repo_root = params_path.parent
+    selected_summary_path = _resolve_training_summary(repo_root, summary_path)
+    training_summary = json.loads(selected_summary_path.read_text(encoding="utf-8"))
+    evaluation_summary = evaluate_registered_model(
+        params_path=params_path,
+        batch_name="baseline_test",
+        output_dir=output_dir,
+        max_samples=max_samples,
+    )
+
+    production_run_id = evaluation_summary["source_training_run_id"]
+    summary_run_ids = {result["run_id"] for result in training_summary.get("results", [])}
+    smoke_payload = {
+        "training_summary": str(selected_summary_path.relative_to(repo_root)),
+        "training_results_found": len(training_summary.get("results", [])),
+        "production_run_found_in_summary": production_run_id in summary_run_ids,
+        "production_run_id": production_run_id,
+        "evaluation_summary": evaluation_summary,
+    }
+
+    smoke_dir = _resolve_path(repo_root, output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
+    smoke_dir.mkdir(parents=True, exist_ok=True)
+    smoke_report_path = smoke_dir / "training_registry_smoke.json"
+    _write_json(smoke_report_path, smoke_payload)
+    smoke_payload["report_path"] = str(smoke_report_path.relative_to(repo_root))
+    return smoke_payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Evaluate the current production model on labeled MNIST batches.",
+    )
+    parser.add_argument("--params", default="params.yaml", help="Path to params.yaml.")
+    parser.add_argument("--batch-name", default=None, help="Named batch under data/processed, such as clean_batch_a.")
+    parser.add_argument("--batch-path", default=None, help="Optional explicit path to an .npz batch file.")
+    parser.add_argument("--output-dir", default="artifacts/evaluation", help="Folder for evaluation reports.")
+    parser.add_argument(
+        "--registered-model-name",
+        default=None,
+        help="Optional MLflow registered model name override.",
+    )
+    parser.add_argument("--alias", default=MODEL_ALIAS, help="Model alias to evaluate.")
+    parser.add_argument("--max-samples", type=int, default=None, help="Optional cap for scored samples.")
+    parser.add_argument(
+        "--use-clean-labels",
+        action="store_true",
+        help="Use clean_labels when the batch file contains them.",
+    )
+    parser.add_argument(
+        "--freeze-baseline",
+        action="store_true",
+        help="Evaluate baseline_test and clean_batch_a together and write a baseline snapshot.",
+    )
+    args = parser.parse_args(argv)
+
+    summary = evaluate_registered_model(
+        params_path=args.params,
+        batch_name=args.batch_name,
+        batch_path=args.batch_path,
+        output_dir=args.output_dir,
+        registered_model_name=args.registered_model_name,
+        alias=args.alias,
+        max_samples=args.max_samples,
+        use_clean_labels=args.use_clean_labels,
+        freeze_baseline=args.freeze_baseline,
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _load_runtime_config(repo_root: Path) -> dict[str, str]:
+    config: dict[str, str] = {}
+
+    example_path = repo_root / ".env.example"
+    env_path = repo_root / ".env"
+
+    if example_path.exists():
+        config.update({key: value for key, value in dotenv_values(example_path).items() if value})
+    if env_path.exists():
+        config.update({key: value for key, value in dotenv_values(env_path).items() if value})
+
+    return config
+
+
+def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return (repo_root / path).resolve()
+
+
+def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
+    if raw_tracking_uri.startswith("sqlite:////"):
+        return raw_tracking_uri
+
+    if raw_tracking_uri.startswith("sqlite:///"):
+        database_path = (repo_root / raw_tracking_uri.removeprefix("sqlite:///" )).resolve()
+        return f"sqlite:///{database_path.as_posix()}"
+
+    return raw_tracking_uri
+
+
+def _resolve_batch_specs(
+    data_root: Path,
+    batch_name: str | None,
+    batch_path: str | Path | None,
+    freeze_baseline: bool,
+) -> list[tuple[str, Path]]:
+    if freeze_baseline:
+        return [
+            (current_batch_name, data_root / "processed" / f"{current_batch_name}.npz")
+            for current_batch_name in BASELINE_FREEZE_BATCHES
+        ]
+
+    if batch_path is not None:
+        resolved_path = Path(batch_path).resolve()
+        return [(resolved_path.stem, resolved_path)]
+
+    if batch_name is None:
+        raise ValueError("Provide --batch-name, --batch-path, or --freeze-baseline")
+
+    return [(batch_name, data_root / "processed" / f"{batch_name}.npz")]
+
+
+def _evaluate_batch(
+    model: Any,
+    batch_path: Path,
+    batch_name: str,
+    max_samples: int | None,
+    use_clean_labels: bool,
+) -> dict[str, Any]:
+    if not batch_path.exists():
+        raise FileNotFoundError(f"Batch file not found: {batch_path}")
+
+    with np.load(batch_path) as batch:
+        images = batch["images"].astype(np.float32)
+        labels_key = "clean_labels" if use_clean_labels and "clean_labels" in batch.files else "labels"
+        labels = batch[labels_key].astype(np.int64)
+
+    if max_samples is not None:
+        images = images[:max_samples]
+        labels = labels[:max_samples]
+
+    probabilities = model.predict(images, verbose=0)
+    predicted_labels = np.argmax(probabilities, axis=1)
+    confidences = np.max(probabilities, axis=1)
+
+    return {
+        "batch_name": batch_name,
+        "batch_path": str(batch_path),
+        "labels_key": labels_key,
+        "num_examples": int(len(labels)),
+        "accuracy": float(accuracy_score(labels, predicted_labels)),
+        "macro_f1": float(f1_score(labels, predicted_labels, average="macro")),
+        "mean_confidence": float(np.mean(confidences)),
+        "label_distribution": np.bincount(labels, minlength=10).tolist(),
+        "predicted_distribution": np.bincount(predicted_labels, minlength=10).tolist(),
+    }
+
+
+def _resolve_training_summary(repo_root: Path, summary_path: str | Path | None) -> Path:
+    if summary_path is not None:
+        resolved = _resolve_path(repo_root, summary_path)
+        if not resolved.exists():
+            raise FileNotFoundError(f"Training summary file not found: {resolved}")
+        return resolved
+
+    training_root = repo_root / "artifacts" / "training"
+    candidates = sorted(training_root.glob("*/summary.json"))
+    if not candidates:
+        raise FileNotFoundError("No summary.json files found under artifacts/training.")
+    return candidates[-1]
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
