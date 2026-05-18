@@ -1,0 +1,121 @@
+schema: '2.0'
+stages:
+  prepare_baseline_data:
+    cmd: python scripts/prepare_data.py --stage prepare-baseline
+    deps:
+    - path: scripts/prepare_data.py
+      hash: md5
+      md5: d34ff65c5453e987c938b3391d955dd7
+      size: 327
+    - path: src/mlops_mnist/data/__init__.py
+      hash: md5
+      md5: ecb128b3a1f225c4d3ad2563170602f8
+      size: 458
+    - path: src/mlops_mnist/data/pipeline.py
+      hash: md5
+      md5: 542c4d763512448591c06d892569e4b7
+      size: 19904
+    params:
+      params.yaml:
+        data.baseline:
+          train_size: 10000
+          validation_size: 2000
+          test_size: 2000
+        data.future_batches:
+          clean_batch_a_size: 5000
+          clean_batch_b_size: 5000
+          drifted_inference_batch_size: 3000
+          noisy_retraining_batch_size: 5000
+        model.num_classes: 10
+        project.name: mlops-mnist-drift-lab
+        project.random_seed: 42
+    outs:
+    - path: data/interim/base_manifest.json
+      hash: md5
+      md5: febc7f7b9773b47ebe2f64ae5bd7d884
+      size: 3465
+    - path: data/interim/drift_source_batch.npz
+      hash: md5
+      md5: 9a22e08367d244a66fd1867ec6ae7ed6
+      size: 788093
+    - path: data/interim/noisy_retraining_source_batch.npz
+      hash: md5
+      md5: a6f5c5e14dfefef0f744c3813282ae24
+      size: 1319739
+    - path: data/processed/baseline_test.npz
+      hash: md5
+      md5: cb1355b327bb0a602e0b1bb84599d485
+      size: 526997
+    - path: data/processed/baseline_train.npz
+      hash: md5
+      md5: ce18d984066fc86041e68aea7d2474b2
+      size: 2640217
+    - path: data/processed/baseline_validation.npz
+      hash: md5
+      md5: 28253d5e405b6da73b001b834d0fd832
+      size: 528952
+    - path: data/processed/clean_batch_a.npz
+      hash: md5
+      md5: 8aefb21803e521a70bb7ec3f2fc969e4
+      size: 1309662
+    - path: data/processed/clean_batch_b.npz
+      hash: md5
+      md5: 2e28b177dcbbeab987fd71750a91d88d
+      size: 1319341
+    - path: data/raw/mnist.npz
+      hash: md5
+      md5: 65fe3019ad13e63cfcaee8c09a6b2dd8
+      size: 11507728
+  generate_scenarios:
+    cmd: python scripts/prepare_data.py --stage generate-scenarios
+    deps:
+    - path: data/interim/base_manifest.json
+      hash: md5
+      md5: febc7f7b9773b47ebe2f64ae5bd7d884
+      size: 3465
+    - path: data/interim/drift_source_batch.npz
+      hash: md5
+      md5: 9a22e08367d244a66fd1867ec6ae7ed6
+      size: 788093
+    - path: data/interim/noisy_retraining_source_batch.npz
+      hash: md5
+      md5: a6f5c5e14dfefef0f744c3813282ae24
+      size: 1319739
+    - path: scripts/prepare_data.py
+      hash: md5
+      md5: d34ff65c5453e987c938b3391d955dd7
+      size: 327
+    - path: src/mlops_mnist/data/__init__.py
+      hash: md5
+      md5: ecb128b3a1f225c4d3ad2563170602f8
+      size: 458
+    - path: src/mlops_mnist/data/pipeline.py
+      hash: md5
+      md5: 542c4d763512448591c06d892569e4b7
+      size: 19904
+    params:
+      params.yaml:
+        data.drift:
+          transforms:
+          - gaussian_noise
+          - gaussian_blur
+          - rotation
+          - contrast_shift
+          severity: medium
+        data.noisy_labels:
+          flip_fraction: 0.15
+        model.num_classes: 10
+        project.random_seed: 42
+    outs:
+    - path: data/interim/data_manifest.json
+      hash: md5
+      md5: b38b754353f88e0cb1805a25ceb68ddc
+      size: 4585
+    - path: data/processed/drifted_inference_batch.npz
+      hash: md5
+      md5: 7344fe9b0890e1f34d9f3815ce1ca7a3
+      size: 8372600
+    - path: data/processed/noisy_retraining_batch.npz
+      hash: md5
+      md5: ee5c914fff72613769794755fc9a6033
+      size: 1324662

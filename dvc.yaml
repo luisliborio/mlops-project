@@ -1,0 +1,42 @@
+stages:
+  prepare_baseline_data:
+    cmd: python scripts/prepare_data.py --stage prepare-baseline
+    deps:
+      - scripts/prepare_data.py
+      - src/mlops_mnist/data/__init__.py
+      - src/mlops_mnist/data/pipeline.py
+    params:
+      - project.name
+      - project.random_seed
+      - data.baseline
+      - data.future_batches
+      - model.num_classes
+    outs:
+      - data/raw/mnist.npz
+      - data/processed/baseline_train.npz
+      - data/processed/baseline_validation.npz
+      - data/processed/baseline_test.npz
+      - data/processed/clean_batch_a.npz
+      - data/processed/clean_batch_b.npz
+      - data/interim/drift_source_batch.npz
+      - data/interim/noisy_retraining_source_batch.npz
+      - data/interim/base_manifest.json
+
+  generate_scenarios:
+    cmd: python scripts/prepare_data.py --stage generate-scenarios
+    deps:
+      - scripts/prepare_data.py
+      - src/mlops_mnist/data/__init__.py
+      - src/mlops_mnist/data/pipeline.py
+      - data/interim/base_manifest.json
+      - data/interim/drift_source_batch.npz
+      - data/interim/noisy_retraining_source_batch.npz
+    params:
+      - project.random_seed
+      - data.drift
+      - data.noisy_labels
+      - model.num_classes
+    outs:
+      - data/processed/drifted_inference_batch.npz
+      - data/processed/noisy_retraining_batch.npz
+      - data/interim/data_manifest.json
