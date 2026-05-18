@@ -18,10 +18,48 @@ from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, Request, Response
 from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, Summary, generate_latest
 
 
 MODEL_ALIAS = "production"
-METRICS_PLACEHOLDER = "# Prometheus metrics will be added in Day 9\n"
+
+HTTP_REQUESTS_TOTAL = Counter(
+    "mnist_api_http_requests_total",
+    "Total HTTP requests served by the API.",
+    ["method", "path", "status_code"],
+)
+HTTP_REQUEST_LATENCY_SECONDS = Histogram(
+    "mnist_api_http_request_latency_seconds",
+    "HTTP request latency in seconds.",
+    ["method", "path"],
+)
+HTTP_ERRORS_TOTAL = Counter(
+    "mnist_api_errors_total",
+    "Total API requests that ended in an error.",
+    ["method", "path"],
+)
+PREDICTION_CONFIDENCE = Summary(
+    "mnist_api_prediction_confidence",
+    "Prediction confidences observed by the API.",
+)
+PREDICTED_CLASS_TOTAL = Counter(
+    "mnist_api_predicted_class_total",
+    "Predicted digit classes served by the API.",
+    ["digit"],
+)
+LAST_MEAN_CONFIDENCE = Gauge(
+    "mnist_api_last_mean_confidence",
+    "Mean confidence of the most recent prediction batch.",
+)
+LAST_BATCH_SIZE = Gauge(
+    "mnist_api_last_batch_size",
+    "Size of the most recent prediction batch.",
+)
+MODEL_INFO = Gauge(
+    "mnist_api_model_info",
+    "Currently loaded production model.",
+    ["model_name", "alias", "version", "candidate_name"],
+)
 
 
 class PredictRequest(BaseModel):
@@ -61,6 +99,12 @@ class InferenceService:
             f"models:/{self.registered_model_name}@{self.model_alias}"
         )
         self.model_loaded_at = _utc_now()
+        MODEL_INFO.labels(
+            model_name=self.registered_model_name,
+            alias=self.model_alias,
+            version=self.model_version or "unknown",
+            candidate_name=self.source_candidate_name or "unknown",
+        ).set(1)
 
     def predict(self, request_payload: PredictRequest, client_host: str | None) -> dict[str, Any]:
         if self.model is None:
@@ -75,6 +119,13 @@ class InferenceService:
         confidences = np.max(probabilities, axis=1)
         request_id = str(uuid4())
         prediction_rows = []
+
+        for confidence in confidences:
+            PREDICTION_CONFIDENCE.observe(float(confidence))
+        for label in predicted_labels:
+            PREDICTED_CLASS_TOTAL.labels(digit=str(int(label))).inc()
+        LAST_BATCH_SIZE.set(len(predicted_labels))
+        LAST_MEAN_CONFIDENCE.set(float(np.mean(confidences)))
 
         for index in range(len(predicted_labels)):
             prediction_rows.append(
@@ -149,6 +200,35 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def collect_http_metrics(request: Request, call_next):
+    path = request.url.path
+    if path == "/metrics":
+        return await call_next(request)
+
+    start_time = time.perf_counter()
+    status_code = 500
+    error_recorded = False
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception:
+        error_recorded = True
+        HTTP_ERRORS_TOTAL.labels(method=request.method, path=path).inc()
+        raise
+    finally:
+        elapsed = time.perf_counter() - start_time
+        HTTP_REQUEST_LATENCY_SECONDS.labels(method=request.method, path=path).observe(elapsed)
+        HTTP_REQUESTS_TOTAL.labels(
+            method=request.method,
+            path=path,
+            status_code=str(status_code),
+        ).inc()
+        if status_code >= 400 and not error_recorded:
+            HTTP_ERRORS_TOTAL.labels(method=request.method, path=path).inc()
+
+
 @app.get("/health")
 def healthcheck(request: Request) -> dict[str, Any]:
     service = _get_service(request)
@@ -163,7 +243,7 @@ def model_info(request: Request) -> dict[str, Any]:
 
 @app.get("/metrics")
 def metrics() -> Response:
-    return Response(content=METRICS_PLACEHOLDER, media_type="text/plain; version=0.0.4")
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/predict")
