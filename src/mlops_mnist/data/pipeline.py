@@ -197,6 +197,15 @@ def prepare_baseline_artifacts(
     baseline_config = params["data"]["baseline"]
     future_batches_config = params["data"]["future_batches"]
     num_classes = int(params["model"]["num_classes"])
+    baseline_train_size = int(baseline_config["train_size"])
+    baseline_validation_size = _resolve_configured_split_size(
+        baseline_config["validation_size"],
+        reference_total=baseline_train_size,
+        split_name="data.baseline.validation_size",
+    )
+    benchmark_test_size = int(baseline_config.get("benchmark_test_size", baseline_config.get("test_size", 0)))
+    if benchmark_test_size <= 0:
+        raise ValueError("data.baseline.benchmark_test_size must be a positive integer")
 
     # Consume the shuffled arrays sequentially so batches never overlap by accident.
     train_cursor = 0
@@ -206,14 +215,14 @@ def prepare_baseline_artifacts(
         train_images,
         train_labels,
         train_cursor,
-        int(baseline_config["train_size"]),
+        baseline_train_size,
         "baseline_train",
     )
     baseline_validation, train_cursor = _take_batch(
         train_images,
         train_labels,
         train_cursor,
-        int(baseline_config["validation_size"]),
+        baseline_validation_size,
         "baseline_validation",
     )
     clean_batch_a, train_cursor = _take_batch(
@@ -242,7 +251,7 @@ def prepare_baseline_artifacts(
         test_images,
         test_labels,
         test_cursor,
-        int(baseline_config["test_size"]),
+        benchmark_test_size,
         "baseline_test",
     )
     drift_source_batch, test_cursor = _take_batch(
@@ -516,6 +525,25 @@ def _take_batch(
             f"requested {batch_size}, available {len(images) - start_index}"
         )
     return (images[start_index:end_index], labels[start_index:end_index]), end_index
+
+
+def _resolve_configured_split_size(
+    raw_size: float | int,
+    reference_total: int,
+    split_name: str,
+) -> int:
+    numeric_size = float(raw_size)
+    if numeric_size <= 0:
+        raise ValueError(f"{split_name} must be positive")
+
+    if numeric_size < 1.0:
+        resolved_size = int(round(reference_total * numeric_size))
+    else:
+        resolved_size = int(numeric_size)
+
+    if resolved_size <= 0:
+        raise ValueError(f"{split_name} resolved to zero examples")
+    return resolved_size
 
 
 def _write_processed_batch(

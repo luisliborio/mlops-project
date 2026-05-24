@@ -15,6 +15,8 @@ from mlflow.tracking import MlflowClient
 from sklearn.metrics import f1_score
 from tensorflow import keras
 
+from mlops_mnist.utils.mlflow_compat import prepare_local_tracking_uri, resolve_runtime_write_path
+
 
 EARLY_STOPPING_PATIENCE = 5
 
@@ -47,8 +49,8 @@ def train_candidates(
         repo_root,
         data_root or runtime_config.get("DATA_ROOT", "data"),
     )
-    resolved_output_dir = _resolve_path(repo_root, output_dir)
-    resolved_models_dir = _resolve_path(repo_root, models_dir)
+    resolved_output_dir = resolve_runtime_write_path(repo_root, output_dir)
+    resolved_models_dir = resolve_runtime_write_path(repo_root, models_dir)
     manifest_path = resolved_data_root / "interim" / "data_manifest.json"
 
     datasets = _load_datasets(
@@ -77,6 +79,7 @@ def train_candidates(
         "MLFLOW_EXPERIMENT_NAME",
         params["project"].get("experiment_name", params["project"]["name"]),
     )
+    tracking_uri = prepare_local_tracking_uri(repo_root, tracking_uri)
     mlflow.set_tracking_uri(tracking_uri)
     _ensure_experiment(experiment_name, artifact_root)
     mlflow.set_experiment(experiment_name)
@@ -289,7 +292,7 @@ def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
 
 
 def _resolve_artifact_root(repo_root: Path, raw_artifact_root: str) -> Path:
-    artifact_root = _resolve_path(repo_root, raw_artifact_root)
+    artifact_root = resolve_runtime_write_path(repo_root, raw_artifact_root)
     artifact_root.mkdir(parents=True, exist_ok=True)
     return artifact_root
 

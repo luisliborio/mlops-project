@@ -10,9 +10,10 @@ data:
     dataset: mnist
     loader: tensorflow.keras.datasets.mnist
   baseline:
-    train_size: 10000
-    validation_size: 2000
-    test_size: 2000
+    train_size: 1000
+    validation_size: 0.2
+    benchmark_test_size: 10000
+    adaptation_test_size: 0.2
   future_batches:
     clean_batch_a_size: 5000
     clean_batch_b_size: 5000
@@ -34,13 +35,13 @@ model:
   num_classes: 10
   candidates:
     - name: cnn_small
-      conv_filters: [16, 32]
-      dense_units: 64
-      dropout: 0.20
+      conv_filters: [8, 8]
+      dense_units: 16
+      dropout: 0.10
     - name: cnn_medium
-      conv_filters: [32, 64]
-      dense_units: 128
-      dropout: 0.30
+      conv_filters: [8, 16]
+      dense_units: 32
+      dropout: 0.2
 
 monitoring:
   system_metrics:
@@ -55,14 +56,15 @@ monitoring:
     - predicted_class_distribution
     - pixel_intensity_histogram_js_divergence
   thresholds:
-    min_rolling_accuracy: 0.90
-    max_confidence_drop: 0.10
+    min_rolling_accuracy: 0.95
+    max_confidence_drop: 0.1
     max_histogram_js_divergence: 0.15
 
 retraining:
   min_recent_samples: 1000
   acceptance:
-    min_accuracy_gain: 0.002
+    min_adaptation_accuracy_gain: 0.002
+    max_benchmark_accuracy_regression: 0.002
     keep_production_on_failure: true
 
 mvp:

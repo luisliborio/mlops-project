@@ -15,6 +15,12 @@ from dotenv import dotenv_values
 from mlflow.tracking import MlflowClient
 from tensorflow import keras
 
+from mlops_mnist.utils.mlflow_compat import (
+    prepare_local_tracking_uri,
+    resolve_runtime_model_artifact_path,
+    resolve_runtime_write_path,
+)
+
 
 MODEL_ALIAS = "production"
 MODEL_READY_POLL_SECONDS = 1.0
@@ -58,6 +64,7 @@ def promote_best_model(
         data_root or runtime_config.get("DATA_ROOT", "data"),
     )
 
+    tracking_uri = prepare_local_tracking_uri(repo_root, tracking_uri)
     mlflow.set_tracking_uri(tracking_uri)
     _ensure_experiment(experiment_name, artifact_root)
     mlflow.set_experiment(experiment_name)
@@ -72,7 +79,7 @@ def promote_best_model(
         raise FileNotFoundError(f"Saved model file not found: {model_path}")
 
     resolved_model_name = registered_model_name or params["project"]["registered_model_name"]
-    report_dir = repo_root / "artifacts" / "registry" / datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_dir = resolve_runtime_write_path(repo_root, "artifacts/registry") / datetime.now().strftime("%Y%m%d_%H%M%S")
     report_dir.mkdir(parents=True, exist_ok=True)
 
     model = keras.models.load_model(model_path)
@@ -130,6 +137,7 @@ def promote_best_model(
         )
 
         verification_payload = _verify_registered_model(
+            repo_root=repo_root,
             registered_model_name=resolved_model_name,
             alias=alias,
             data_root=resolved_data_root,
@@ -233,7 +241,7 @@ def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
 
 
 def _resolve_artifact_root(repo_root: Path, raw_artifact_root: str) -> Path:
-    artifact_root = _resolve_path(repo_root, raw_artifact_root)
+    artifact_root = resolve_runtime_write_path(repo_root, raw_artifact_root)
     artifact_root.mkdir(parents=True, exist_ok=True)
     return artifact_root
 
@@ -298,6 +306,7 @@ def _wait_for_model_version(client: MlflowClient, model_name: str, version: str 
 
 
 def _verify_registered_model(
+    repo_root: Path,
     registered_model_name: str,
     alias: str,
     data_root: Path,
@@ -313,7 +322,12 @@ def _verify_registered_model(
 
     sample_images = images[:verify_samples]
     sample_labels = labels[:verify_samples]
-    loaded_model = mlflow.tensorflow.load_model(f"models:/{registered_model_name}@{alias}")
+    client = MlflowClient()
+    version_info = client.get_model_version_by_alias(registered_model_name, alias)
+    model_artifact_path = resolve_runtime_model_artifact_path(repo_root, version_info.source)
+    loaded_model = mlflow.tensorflow.load_model(
+        model_artifact_path.as_posix() if model_artifact_path is not None else f"models:/{registered_model_name}@{alias}"
+    )
     probabilities = loaded_model.predict(sample_images, verbose=0)
     predicted_labels = np.argmax(probabilities, axis=1)
     confidences = np.max(probabilities, axis=1)

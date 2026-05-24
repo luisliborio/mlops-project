@@ -1,5 +1,7 @@
 previous_practices/
 planning/
+guide/
+tests/
 
 # Local Python environments
 .venv/
@@ -9,6 +11,7 @@ venv/
 .env
 .env.*
 !.env.example
+.runtime/
 
 # Python cache and tooling
 __pycache__/
@@ -30,6 +33,11 @@ data/interim/*
 !data/interim/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+!data/processed/training_references/
+data/processed/training_references/*
+!data/processed/training_references/.gitkeep
+!data/processed/training_references/.gitignore
+!data/processed/training_references/*.dvc
 
 # Monitoring runtime data
 monitoring/prometheus/data/

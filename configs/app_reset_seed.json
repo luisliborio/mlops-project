@@ -1,0 +1,13 @@
+{
+  "registered_model_name": "mnist-digit-classifier",
+  "alias": "production",
+  "seed_model_path": "models/training/20260518_105727/cnn_medium.keras",
+  "candidate_name": "cnn_medium",
+  "source_training_run_id": "35b6e1c4540545b6a6f51ee2c5a22af5",
+  "source_summary": "artifacts/training/20260518_105727/summary.json",
+  "training_reference_name": "baseline_train",
+  "training_reference_path": "data/processed/baseline_train.npz",
+  "default_batch_name": "baseline_test",
+  "default_batch_size": 16,
+  "default_record_mode": false
+}

@@ -2,16 +2,46 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import requests
 import streamlit as st
 from PIL import Image
 from dotenv import dotenv_values
 
+from mlops_mnist.app_reset import reset_application_state
+from mlops_mnist.ui.lifecycle import (
+    advance_stream_cursor,
+    append_event_log,
+    append_recorded_batch,
+    compute_cursor_slice,
+    compute_histogram_js_divergence,
+    count_pending_labeled_samples,
+    count_ready_labeled_samples,
+    ensure_baseline_reference,
+    latest_recorded_distribution,
+    load_lifecycle_state,
+    load_project_params,
+    record_preview_batch,
+    reset_lifecycle_state,
+    run_lifecycle_monitoring,
+    run_lifecycle_retraining,
+    save_lifecycle_state,
+    summarize_unsupervised_alerts,
+    switch_lifecycle_batch,
+)
+from mlops_mnist.utils.mlflow_compat import resolve_repo_bound_path
+
 
 REQUEST_TIMEOUT_SECONDS = 30
+FLASH_MESSAGE_KEY = "ui_flash_message"
+ACTIVE_VIEW_KEY = "ui_active_view"
+PENDING_FULL_RESET_KEY = "ui_pending_full_system_reset"
+LIFECYCLE_VIEW = "Lifecycle Simulation"
+VIEW_OPTIONS = ["Sample Prediction", "Upload Image", LIFECYCLE_VIEW]
 DEFAULT_BATCH_OPTIONS = [
     "baseline_test",
     "clean_batch_a",
@@ -24,6 +54,7 @@ DEFAULT_BATCH_OPTIONS = [
 def main() -> None:
     st.set_page_config(page_title="MNIST Drift Lab", page_icon="/", layout="wide")
     repo_root = Path(__file__).resolve().parents[3]
+    params = load_project_params(repo_root / "params.yaml")
     runtime_config = _load_runtime_config(repo_root)
     api_base_url = st.sidebar.text_input(
         "API base URL",
@@ -33,22 +64,30 @@ def main() -> None:
 
     st.title("MNIST Production Demo")
     st.caption("Predict with the current production alias and simulate small batch requests.")
+    _render_flash_message()
+
+    if ACTIVE_VIEW_KEY not in st.session_state:
+        st.session_state[ACTIVE_VIEW_KEY] = VIEW_OPTIONS[0]
 
     health = _get_api_health(api_base_url)
     _render_api_status(health)
 
-    single_tab, upload_tab, batch_tab = st.tabs(
-        ["Sample Prediction", "Upload Image", "Batch Simulation"]
+    active_view = st.radio(
+        "View",
+        options=VIEW_OPTIONS,
+        key=ACTIVE_VIEW_KEY,
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    with single_tab:
+    if active_view == "Sample Prediction":
         _render_sample_prediction(repo_root, api_base_url)
 
-    with upload_tab:
+    elif active_view == "Upload Image":
         _render_upload_prediction(api_base_url)
 
-    with batch_tab:
-        _render_batch_simulation(repo_root, api_base_url)
+    else:
+        _render_lifecycle_simulation(repo_root, api_base_url, params)
 
 
 def _render_api_status(health: dict[str, Any] | None) -> None:
@@ -119,40 +158,138 @@ def _render_upload_prediction(api_base_url: str) -> None:
                 st.write(f"Model version: `{prediction['model_version']}`")
 
 
-def _render_batch_simulation(repo_root: Path, api_base_url: str) -> None:
-    st.subheader("Batch Simulation")
-    batch_name = st.selectbox("Batch to send", options=DEFAULT_BATCH_OPTIONS, key="batch_simulation_name")
-    batch_size = st.slider("Batch size", min_value=1, max_value=64, value=16, key="batch_size")
+def _render_lifecycle_simulation(repo_root: Path, api_base_url: str, params: dict[str, Any]) -> None:
+    st.subheader("Lifecycle Simulation")
+    st.caption(
+        "Each click is one simulated time step. Record off means preview only. "
+        "Record on means incoming data is stored for monitoring, labeling, and retraining."
+    )
+
+    _consume_pending_full_system_reset(repo_root=repo_root, api_base_url=api_base_url)
+    state = load_lifecycle_state(repo_root)
+    default_batch = (
+        state.get("active_batch_name")
+        if state.get("active_batch_name") in DEFAULT_BATCH_OPTIONS
+        else DEFAULT_BATCH_OPTIONS[0]
+    )
+    batch_selectbox_kwargs: dict[str, Any] = {
+        "label": "Incoming source batch",
+        "options": DEFAULT_BATCH_OPTIONS,
+        "key": "lifecycle_batch_name",
+    }
+    if "lifecycle_batch_name" not in st.session_state:
+        batch_selectbox_kwargs["index"] = DEFAULT_BATCH_OPTIONS.index(default_batch)
+    batch_name = st.selectbox(**batch_selectbox_kwargs)
+
+    batch_slider_kwargs: dict[str, Any] = {
+        "label": "Incoming batch size",
+        "min_value": 1,
+        "max_value": 512,
+        "key": "lifecycle_batch_size",
+    }
+    if "lifecycle_batch_size" not in st.session_state:
+        batch_slider_kwargs["value"] = int(state.get("batch_size", 16) or 16)
+    batch_size = st.slider(**batch_slider_kwargs)
     batch = _load_batch(repo_root, batch_name)
-    images = batch["images"][:batch_size, ..., 0]
-    labels = batch["labels"][:batch_size]
 
-    if st.button("Run batch prediction", key="predict_batch"):
-        prediction = _predict_instances(api_base_url, list(images), source=f"ui-batch:{batch_name}")
-        if prediction is None:
-            st.error("Batch prediction failed. Check that the API is running.")
-            return
-
-        predicted_labels = [row["predicted_label"] for row in prediction["predictions"]]
-        confidences = [row["confidence"] for row in prediction["predictions"]]
-        accuracy = float(np.mean(np.asarray(predicted_labels) == labels)) if len(labels) else 0.0
-
-        metric_col1, metric_col2, metric_col3 = st.columns(3)
-        metric_col1.metric("Batch accuracy", f"{accuracy:.4f}")
-        metric_col2.metric("Mean confidence", f"{np.mean(confidences):.4f}")
-        metric_col3.metric("Model version", prediction["model_version"])
-
-        results = []
-        for index, predicted_label in enumerate(predicted_labels):
-            results.append(
-                {
-                    "index": index,
-                    "true_label": int(labels[index]),
-                    "predicted_label": int(predicted_label),
-                    "confidence": float(confidences[index]),
-                }
+    if batch_name != state.get("active_batch_name"):
+        if not state.get("baseline_reference"):
+            baseline_reference = ensure_baseline_reference(
+                repo_root=repo_root,
+                params_path=repo_root / "params.yaml",
+                baseline_snapshot_path=state.get("baseline_snapshot_path"),
             )
-        st.dataframe(results, use_container_width=True)
+            state["baseline_snapshot_path"] = baseline_reference["summary_path"]
+            state["baseline_reference"] = baseline_reference
+        state = switch_lifecycle_batch(
+            repo_root=repo_root,
+            state=state,
+            batch_name=batch_name,
+            batch_size=batch_size,
+        )
+        st.info(
+            f"Incoming source batch switched to {batch_name}. "
+            "Lifecycle history and recorded data were preserved."
+        )
+    elif not state.get("baseline_reference"):
+        baseline_reference = ensure_baseline_reference(
+            repo_root=repo_root,
+            params_path=repo_root / "params.yaml",
+            baseline_snapshot_path=state.get("baseline_snapshot_path"),
+        )
+        state["baseline_snapshot_path"] = baseline_reference["summary_path"]
+        state["baseline_reference"] = baseline_reference
+        save_lifecycle_state(repo_root, state)
+
+    record_mode = st.toggle(
+        "Record incoming data",
+        value=bool(state.get("record_mode", False)),
+        help="When on, each batch is stored as recent incoming data for lifecycle monitoring.",
+    )
+    if bool(record_mode) != bool(state.get("record_mode", False)):
+        state["record_mode"] = bool(record_mode)
+        save_lifecycle_state(repo_root, state)
+
+    min_recent_samples = int(params["retraining"]["min_recent_samples"])
+    _render_lifecycle_status_cards(state, batch_name, batch_size, len(batch["images"]), min_recent_samples)
+
+    next_slice = compute_cursor_slice(
+        cursor=int(state.get("cursor", 0)),
+        batch_size=int(batch_size),
+        total_examples=len(batch["images"]),
+    )
+    pending_labeled = count_pending_labeled_samples(state)
+    ready_labeled = count_ready_labeled_samples(state)
+
+    control_col1, control_col2, control_col3, control_col4 = st.columns(4)
+    run_next_clicked = control_col1.button(
+        "Run Next Batch",
+        use_container_width=True,
+        disabled=not bool(next_slice["indices"]),
+    )
+    label_clicked = control_col2.button(
+        "Label Data",
+        use_container_width=True,
+        disabled=pending_labeled <= 0,
+    )
+    retrain_clicked = control_col3.button(
+        "Retrain",
+        use_container_width=True,
+        disabled=ready_labeled < min_recent_samples,
+    )
+    control_col4.button(
+        "Full System Reset",
+        use_container_width=True,
+        on_click=_queue_full_system_reset,
+    )
+
+    if run_next_clicked:
+        _handle_run_next_batch(
+            repo_root=repo_root,
+            api_base_url=api_base_url,
+            params=params,
+            state=state,
+            batch_name=batch_name,
+            batch_size=batch_size,
+            batch=batch,
+            record_mode=bool(record_mode),
+        )
+
+    if label_clicked:
+        _handle_label_action(repo_root=repo_root, state=state, params=params)
+
+    if retrain_clicked:
+        _handle_retraining_action(
+            repo_root=repo_root,
+            api_base_url=api_base_url,
+            state=state,
+            params=params,
+        )
+
+    _render_latest_preview(state.get("latest_preview"))
+    _render_alert_panel(state, params)
+    _render_placeholder_dashboards(state)
+    _render_event_log(state)
 
 
 def _load_runtime_config(repo_root: Path) -> dict[str, str]:
@@ -194,6 +331,15 @@ def _get_api_health(api_base_url: str) -> dict[str, Any] | None:
         return None
 
 
+def _reload_api_model(api_base_url: str) -> dict[str, Any] | None:
+    try:
+        response = requests.post(f"{api_base_url}/reload-model", timeout=REQUEST_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return None
+
+
 def _predict_instances(
     api_base_url: str,
     instances: list[np.ndarray] | list[list[list[float]]],
@@ -216,6 +362,495 @@ def _predict_instances(
         return response.json()
     except requests.RequestException:
         return None
+
+
+def _render_lifecycle_status_cards(
+    state: dict[str, Any],
+    batch_name: str,
+    batch_size: int,
+    total_examples: int,
+    min_recent_samples: int,
+) -> None:
+    next_slice = compute_cursor_slice(
+        cursor=int(state.get("cursor", 0)),
+        batch_size=int(batch_size),
+        total_examples=int(total_examples),
+    )
+    next_range = (
+        f"{next_slice['start_index']}-{next_slice['end_index'] - 1}"
+        if next_slice["indices"]
+        else "end reached"
+    )
+    pending_labeled = count_pending_labeled_samples(state)
+    ready_labeled = count_ready_labeled_samples(state)
+    current_alerts = state.get("current_alerts", [])
+    baseline_reference = state.get("baseline_reference") or {}
+    training_reference_examples = baseline_reference.get("reference_data_examples")
+    training_reference_name = baseline_reference.get("reference_data_name")
+    benchmark_accuracy = baseline_reference.get("accuracy")
+
+    col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
+    col1.metric("Active stream", batch_name)
+    col2.metric("Cursor", f"{state.get('cursor', 0)} / {total_examples}")
+    col3.metric("Next slice", next_range)
+    col4.metric("Record", "on" if state.get("record_mode") else "off")
+    col5.metric("Unlabeled", str(pending_labeled))
+    col6.metric("Labeled / retrain", f"{ready_labeled} / {min_recent_samples}")
+    col7.metric(
+        "Benchmark acc",
+        f"{float(benchmark_accuracy):.4f}" if benchmark_accuracy is not None else "-",
+    )
+    col8.metric(
+        "Train ref size",
+        str(training_reference_examples) if training_reference_examples is not None else "-",
+    )
+
+    if training_reference_name:
+        st.caption(f"Current production training reference: {training_reference_name}")
+
+    if current_alerts:
+        st.warning("Active alerts: " + ", ".join(current_alerts))
+    else:
+        st.success("No active lifecycle alerts.")
+
+
+def _handle_run_next_batch(
+    repo_root: Path,
+    api_base_url: str,
+    params: dict[str, Any],
+    state: dict[str, Any],
+    batch_name: str,
+    batch_size: int,
+    batch: dict[str, Any],
+    record_mode: bool,
+) -> None:
+    previous_cursor = int(state.get("cursor", 0))
+    previous_step = int(state.get("step_counter", 0))
+    previous_exhausted = bool(state.get("stream_exhausted", False))
+
+    slice_payload = advance_stream_cursor(state, total_examples=len(batch["images"]), batch_size=batch_size)
+    if not slice_payload["indices"]:
+        append_event_log(state, level="warning", message="The selected stream has reached its end. Reset the scenario to start again.")
+        save_lifecycle_state(repo_root, state)
+        st.warning("The selected stream has reached its end. Click Reset Scenario to replay it.")
+        return
+
+    images = batch["images"][slice_payload["indices"], ..., 0]
+    labels = batch["labels"][slice_payload["indices"]]
+    current_images = batch["images"][slice_payload["indices"]]
+
+    start_time = perf_counter()
+    prediction = _predict_instances(api_base_url, list(images), source=f"ui-lifecycle:{batch_name}")
+    latency_ms = (perf_counter() - start_time) * 1000.0
+    if prediction is None:
+        state["cursor"] = previous_cursor
+        state["step_counter"] = previous_step
+        state["stream_exhausted"] = previous_exhausted
+        save_lifecycle_state(repo_root, state)
+        st.error("The batch prediction failed, so the lifecycle cursor was not advanced.")
+        return
+
+    preview_payload = _build_preview_payload(
+        slice_payload=slice_payload,
+        labels=labels,
+        prediction=prediction,
+        latency_ms=latency_ms,
+        labels_hidden=record_mode,
+    )
+    record_preview_batch(state, preview_payload)
+
+    if record_mode:
+        baseline_reference = state.get("baseline_reference") or ensure_baseline_reference(
+            repo_root=repo_root,
+            params_path=repo_root / "params.yaml",
+            baseline_snapshot_path=state.get("baseline_snapshot_path"),
+        )
+        state["baseline_snapshot_path"] = baseline_reference["summary_path"]
+        state["baseline_reference"] = baseline_reference
+        baseline_images = _load_images_from_path(
+            repo_root,
+            baseline_reference.get("reference_data_path") or baseline_reference["batch_path"],
+        )
+        alert_summary = summarize_unsupervised_alerts(
+            thresholds=params["monitoring"]["thresholds"],
+            baseline_mean_confidence=float(baseline_reference["mean_confidence"]),
+            current_mean_confidence=float(prediction["mean_confidence"]),
+            histogram_js_divergence=compute_histogram_js_divergence(baseline_images, current_images),
+        )
+        append_recorded_batch(
+            state=state,
+            batch_name=batch_name,
+            step=int(slice_payload["step"]),
+            slice_payload=slice_payload,
+            prediction=prediction,
+            latency_ms=latency_ms,
+            histogram_js_divergence=float(alert_summary["histogram_js_divergence"]),
+            confidence_drop=float(alert_summary["confidence_drop"]),
+            alerts=list(alert_summary["alerts"]),
+            clean_labels_available=bool(batch.get("has_clean_labels", False)),
+        )
+        range_text = f"{slice_payload['start_index']}-{slice_payload['end_index'] - 1}"
+        if alert_summary["alerts"]:
+            append_event_log(
+                state,
+                level="warning",
+                message=(
+                    f"Recorded batch {range_text} from {batch_name}. Alerts raised: "
+                    + ", ".join(alert_summary["alerts"])
+                ),
+            )
+            _set_flash_message(
+                "warning",
+                "Recorded a new incoming batch and raised alerts: "
+                + ", ".join(alert_summary["alerts"]),
+            )
+        else:
+            append_event_log(
+                state,
+                level="info",
+                message=f"Recorded batch {range_text} from {batch_name} without active alerts.",
+            )
+            _set_flash_message("success", f"Recorded batch {range_text} from {batch_name}.")
+    else:
+        append_event_log(
+            state,
+            level="info",
+            message=(
+                f"Previewed batch {slice_payload['start_index']}-{slice_payload['end_index'] - 1} "
+                f"from {batch_name} without recording it."
+            ),
+        )
+        _set_flash_message(
+            "info",
+            "Preview-only mode: this batch was inferred but not stored for monitoring.",
+        )
+
+    save_lifecycle_state(repo_root, state)
+    st.rerun()
+
+
+def _handle_label_action(repo_root: Path, state: dict[str, Any], params: dict[str, Any]) -> None:
+    from mlops_mnist.ui.lifecycle import label_pending_batches
+
+    labeled_now = label_pending_batches(state)
+    if labeled_now <= 0:
+        st.info("There is no new recorded data waiting for delayed labeling.")
+        return
+
+    with st.spinner("Applying delayed labels and updating supervised monitoring..."):
+        monitoring_summary = run_lifecycle_monitoring(
+            repo_root=repo_root,
+            state=state,
+            params_path=repo_root / "params.yaml",
+        )
+
+    message = (
+        f"Labeled {labeled_now} samples. Rolling accuracy is now "
+        f"{monitoring_summary['current_batch']['accuracy']:.4f}."
+    )
+    if monitoring_summary.get("alerts"):
+        append_event_log(
+            state,
+            level="warning",
+            message=message + " Supervised alerts: " + ", ".join(monitoring_summary["alerts"]),
+        )
+        _set_flash_message(
+            "warning",
+            message + " Alerts: " + ", ".join(monitoring_summary["alerts"]),
+        )
+    else:
+        append_event_log(state, level="info", message=message + " No supervised alerts are active.")
+        _set_flash_message("success", message)
+
+    save_lifecycle_state(repo_root, state)
+    st.rerun()
+
+
+def _handle_retraining_action(
+    repo_root: Path,
+    api_base_url: str,
+    state: dict[str, Any],
+    params: dict[str, Any],
+) -> None:
+    min_recent_samples = int(params["retraining"]["min_recent_samples"])
+    ready_labeled = count_ready_labeled_samples(state)
+    if ready_labeled < min_recent_samples:
+        st.info(
+            f"Retraining needs at least {min_recent_samples} labeled samples. "
+            f"Only {ready_labeled} are ready right now."
+        )
+        return
+
+    with st.spinner("Training a challenger model from the labeled lifecycle buffer..."):
+        with st.status("Training challenger model...", expanded=True) as status:
+            status.write(f"Preparing {ready_labeled} labeled samples from the lifecycle buffer.")
+            status.write("Launching retraining and challenger comparison.")
+            retraining_summary = run_lifecycle_retraining(
+                repo_root=repo_root,
+                state=state,
+                params_path=repo_root / "params.yaml",
+                force_retrain=True,
+            )
+            decision = retraining_summary["decision"]
+            status.write(
+                "Finished challenger evaluation with adaptation gain "
+                f"{decision['adaptation_accuracy_gain']:.4f} and benchmark regression "
+                f"{decision['benchmark_accuracy_regression']:.4f}."
+            )
+            status.update(label="Retraining workflow finished.", state="complete")
+
+    decision = retraining_summary["decision"]
+    if decision["accepted"]:
+        reload_summary = _reload_api_model(api_base_url)
+        training_reference_examples = state.get("baseline_reference", {}).get("reference_data_examples")
+        training_reference_message = (
+            f" Training reference now tracks {training_reference_examples} examples."
+            if training_reference_examples is not None
+            else ""
+        )
+        append_event_log(
+            state,
+            level="success",
+            message=(
+                f"Challenger accepted with adaptation gain {decision['adaptation_accuracy_gain']:.4f} "
+                f"and benchmark regression {decision['benchmark_accuracy_regression']:.4f}. "
+                f"Production moved from version {retraining_summary['production_model']['version_before']} "
+                f"to {retraining_summary['production_model']['version_after']}."
+                f"{training_reference_message}"
+            ),
+        )
+        save_lifecycle_state(repo_root, state)
+        if reload_summary is None:
+            _set_flash_message(
+                "warning",
+                "The challenger was promoted, but the API could not reload automatically. Restart the API to serve the new version."
+                + training_reference_message,
+            )
+        else:
+            _set_flash_message(
+                "success",
+                f"Challenger promoted to production version {reload_summary.get('model_version', retraining_summary['production_model']['version_after'])} and the API reloaded it."
+                + training_reference_message,
+            )
+    else:
+        append_event_log(
+            state,
+            level="warning",
+            message=(
+                f"Challenger rejected with adaptation gain {decision['adaptation_accuracy_gain']:.4f} "
+                f"and benchmark regression {decision['benchmark_accuracy_regression']:.4f}. "
+                f"Production stays on version {retraining_summary['production_model']['version_before']}."
+            ),
+        )
+        save_lifecycle_state(repo_root, state)
+        _set_flash_message(
+            "warning",
+            "The challenger did not beat the current production model, so production was preserved.",
+        )
+
+    st.rerun()
+
+
+def _queue_full_system_reset() -> None:
+    st.session_state[PENDING_FULL_RESET_KEY] = True
+
+
+def _consume_pending_full_system_reset(repo_root: Path, api_base_url: str) -> None:
+    if not st.session_state.pop(PENDING_FULL_RESET_KEY, False):
+        return
+
+    with st.spinner("Restoring the app to its initial state..."):
+        reset_summary = reset_application_state(
+            repo_root=repo_root,
+            params_path=repo_root / "params.yaml",
+        )
+
+    restored_batch_name = reset_summary["lifecycle"]["active_batch_name"]
+    restored_batch_size = int(reset_summary["lifecycle"]["batch_size"])
+    st.session_state["lifecycle_batch_name"] = restored_batch_name
+    st.session_state["lifecycle_batch_size"] = restored_batch_size
+
+    reload_summary = _reload_api_model(api_base_url)
+    if reload_summary is None:
+        _set_flash_message(
+            "warning",
+            "The app was reset to the initial production-v1 state, but the API could not reload automatically. Restart or reload the API to serve version 1.",
+        )
+    else:
+        _set_flash_message(
+            "success",
+            f"Full reset complete. The app is back on production version {reload_summary.get('model_version', '1')} with the default lifecycle source {restored_batch_name}.",
+        )
+
+
+def _build_preview_payload(
+    slice_payload: dict[str, Any],
+    labels: np.ndarray,
+    prediction: dict[str, Any],
+    latency_ms: float,
+    labels_hidden: bool,
+) -> dict[str, Any]:
+    predicted_labels = [int(row["predicted_label"]) for row in prediction["predictions"]]
+    confidences = [float(row["confidence"]) for row in prediction["predictions"]]
+    accuracy = float(np.mean(np.asarray(predicted_labels) == labels)) if len(labels) else 0.0
+
+    results = []
+    for offset, predicted_label in enumerate(predicted_labels):
+        row = {
+            "index": int(slice_payload["indices"][offset]),
+            "predicted_label": int(predicted_label),
+            "confidence": float(confidences[offset]),
+        }
+        if not labels_hidden:
+            row["true_label"] = int(labels[offset])
+        results.append(row)
+
+    return {
+        "step": int(slice_payload["step"]),
+        "start_index": int(slice_payload["start_index"]),
+        "end_index": int(slice_payload["end_index"]),
+        "batch_size": len(slice_payload["indices"]),
+        "labels_hidden": bool(labels_hidden),
+        "mean_confidence": float(prediction["mean_confidence"]),
+        "accuracy": float(accuracy),
+        "latency_ms": float(latency_ms),
+        "model_version": prediction["model_version"],
+        "results": results,
+    }
+
+
+def _render_latest_preview(preview_payload: dict[str, Any] | None) -> None:
+    st.markdown("#### Latest Batch Result")
+    if preview_payload is None:
+        st.caption("Click Run Next Batch to simulate the next incoming slice of data.")
+        return
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    metric_col1.metric("Simulated step", str(preview_payload["step"]))
+    metric_col2.metric(
+        "Batch range",
+        f"{preview_payload['start_index']}-{preview_payload['end_index'] - 1}",
+    )
+    metric_col3.metric("Mean confidence", f"{preview_payload['mean_confidence']:.4f}")
+    metric_col4.metric("Latency (ms)", f"{preview_payload['latency_ms']:.1f}")
+
+    if preview_payload["labels_hidden"]:
+        st.info("This batch is being treated as unlabeled live data. Accuracy and F1 stay hidden until Label Data is clicked.")
+    else:
+        st.success(f"Preview batch accuracy: {preview_payload['accuracy']:.4f}")
+
+    st.dataframe(preview_payload["results"], use_container_width=True)
+
+
+def _render_alert_panel(state: dict[str, Any], params: dict[str, Any]) -> None:
+    st.markdown("#### Action Thresholds")
+    threshold_cols = st.columns(3)
+    thresholds = params["monitoring"]["thresholds"]
+    threshold_cols[0].metric("Min rolling accuracy", f"{float(thresholds['min_rolling_accuracy']):.2f}")
+    threshold_cols[1].metric("Max confidence drop", f"{float(thresholds['max_confidence_drop']):.2f}")
+    threshold_cols[2].metric(
+        "Max histogram JS",
+        f"{float(thresholds['max_histogram_js_divergence']):.2f}",
+    )
+
+    current_alerts = state.get("current_alerts", [])
+    if current_alerts:
+        for alert in current_alerts:
+            st.warning(f"Alert trigger: {alert}")
+    else:
+        st.caption("No active threshold violations in the current lifecycle state.")
+
+
+def _render_placeholder_dashboards(state: dict[str, Any]) -> None:
+    st.markdown("#### Monitoring Placeholders")
+    st.caption("Simulated time is click-driven here. These charts stand in for Prometheus and Grafana until those services are available.")
+
+    prom_col, graf_col = st.columns(2)
+    with prom_col:
+        st.markdown("##### Prometheus Placeholder")
+        if state.get("unsupervised_history"):
+            unsupervised = pd.DataFrame(state["unsupervised_history"]).set_index("step")
+            if len(unsupervised) > 1:
+                st.line_chart(unsupervised[["recorded_examples"]], height=180)
+                st.line_chart(unsupervised[["mean_confidence", "confidence_drop"]], height=180)
+                st.line_chart(unsupervised[["histogram_js_divergence"]], height=180)
+                st.line_chart(unsupervised[["latency_ms"]], height=180)
+            else:
+                summary_row = unsupervised.iloc[-1]
+                metric_cols = st.columns(4)
+                metric_cols[0].metric("Recorded examples", int(summary_row["recorded_examples"]))
+                metric_cols[1].metric("Mean confidence", f"{float(summary_row['mean_confidence']):.4f}")
+                metric_cols[2].metric("Confidence drop", f"{float(summary_row['confidence_drop']):.4f}")
+                metric_cols[3].metric("Latency (ms)", f"{float(summary_row['latency_ms']):.1f}")
+            distribution = pd.DataFrame(
+                {"latest_recorded_batch": latest_recorded_distribution(state)},
+                index=[str(index) for index in range(10)],
+            )
+            st.bar_chart(distribution)
+        else:
+            st.info("Turn Record on and run batches to populate the unsupervised lifecycle charts.")
+
+    with graf_col:
+        st.markdown("##### Grafana Placeholder")
+        if state.get("supervised_history"):
+            supervised = pd.DataFrame(state["supervised_history"]).set_index("step")
+            if len(supervised) > 1:
+                st.line_chart(supervised[["accuracy", "macro_f1"]], height=180)
+                st.line_chart(supervised[["accuracy_drop", "confidence_drop"]], height=180)
+                st.line_chart(supervised[["histogram_js_divergence"]], height=180)
+            else:
+                summary_row = supervised.iloc[-1]
+                metric_cols = st.columns(4)
+                metric_cols[0].metric("Rolling accuracy", f"{float(summary_row['accuracy']):.4f}")
+                metric_cols[1].metric("Macro F1", f"{float(summary_row['macro_f1']):.4f}")
+                metric_cols[2].metric("Accuracy drop", f"{float(summary_row['accuracy_drop']):.4f}")
+                metric_cols[3].metric(
+                    "Histogram JS",
+                    f"{float(summary_row['histogram_js_divergence']):.4f}",
+                )
+        else:
+            st.info("Click Label Data after recording batches to reveal supervised lifecycle metrics.")
+
+        if state.get("retraining_history"):
+            st.markdown("##### Retraining Decisions")
+            st.dataframe(list(reversed(state["retraining_history"][-5:])), use_container_width=True)
+        if state.get("training_reference_history"):
+            st.markdown("##### Training Reference Versions")
+            st.dataframe(list(reversed(state["training_reference_history"][-5:])), use_container_width=True)
+
+
+def _render_event_log(state: dict[str, Any]) -> None:
+    st.markdown("#### Event Timeline")
+    if not state.get("event_log"):
+        st.caption("Lifecycle messages will appear here as you preview, record, label, and retrain.")
+        return
+
+    timeline = list(reversed(state["event_log"][-20:]))
+    st.dataframe(timeline, use_container_width=True)
+
+
+def _render_flash_message() -> None:
+    flash_message = st.session_state.pop(FLASH_MESSAGE_KEY, None)
+    if flash_message is None:
+        return
+    level = flash_message.get("level", "info")
+    message = flash_message.get("message", "")
+    if level == "success":
+        st.success(message)
+    elif level == "warning":
+        st.warning(message)
+    else:
+        st.info(message)
+
+
+def _set_flash_message(level: str, message: str) -> None:
+    st.session_state[FLASH_MESSAGE_KEY] = {"level": level, "message": message}
+
+
+def _load_images_from_path(repo_root: Path, batch_path: str | Path) -> np.ndarray:
+    resolved_path = resolve_repo_bound_path(repo_root, batch_path)
+    with np.load(resolved_path) as batch:
+        return batch["images"].astype(np.float32)
 
 
 def _prepare_uploaded_image(file_bytes: bytes) -> np.ndarray:

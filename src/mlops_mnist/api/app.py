@@ -16,9 +16,17 @@ import uvicorn
 import yaml
 from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, Request, Response
+from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, Summary, generate_latest
+
+from mlops_mnist.app_reset import ensure_initial_production_alias
+from mlops_mnist.utils.mlflow_compat import (
+    prepare_local_tracking_uri,
+    resolve_runtime_model_artifact_path,
+    resolve_runtime_write_path,
+)
 
 
 MODEL_ALIAS = "production"
@@ -76,7 +84,8 @@ class InferenceService:
             repo_root,
             self.runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
         )
-        self.logs_root = _resolve_path(repo_root, self.runtime_config.get("LOGS_DIR", "logs"))
+        self.tracking_uri = prepare_local_tracking_uri(repo_root, self.tracking_uri)
+        self.logs_root = resolve_runtime_write_path(repo_root, self.runtime_config.get("LOGS_DIR", "logs"))
         self.prediction_log_path = self.logs_root / "predictions" / "prediction_events.jsonl"
         self.prediction_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.registered_model_name = self.params["project"]["registered_model_name"]
@@ -86,19 +95,48 @@ class InferenceService:
         self.model_loaded_at: str | None = None
         self.source_training_run_id: str | None = None
         self.source_candidate_name: str | None = None
+        self._model_info_labels: dict[str, str] | None = None
 
     def load_model(self) -> None:
         # Load the current production alias from the local MLflow registry.
         mlflow.set_tracking_uri(self.tracking_uri)
         client = MlflowClient()
-        version_info = client.get_model_version_by_alias(self.registered_model_name, self.model_alias)
+        if self._model_info_labels is not None:
+            MODEL_INFO.labels(**self._model_info_labels).set(0)
+        try:
+            version_info = client.get_model_version_by_alias(self.registered_model_name, self.model_alias)
+        except MlflowException as exc:
+            recovered = ensure_initial_production_alias(
+                repo_root=self.repo_root,
+                params_path=self.repo_root / "params.yaml",
+            )
+            if recovered is None:
+                raise exc
+
+            self.tracking_uri = prepare_local_tracking_uri(self.repo_root, _resolve_tracking_uri(
+                self.repo_root,
+                self.runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
+            ))
+            mlflow.set_tracking_uri(self.tracking_uri)
+            client = MlflowClient()
+            version_info = client.get_model_version_by_alias(self.registered_model_name, self.model_alias)
+
         self.model_version = str(version_info.version)
         self.source_training_run_id = version_info.tags.get("source_training_run_id")
         self.source_candidate_name = version_info.tags.get("candidate_name")
+        model_artifact_path = resolve_runtime_model_artifact_path(self.repo_root, version_info.source)
         self.model = mlflow.tensorflow.load_model(
-            f"models:/{self.registered_model_name}@{self.model_alias}"
+            model_artifact_path.as_posix()
+            if model_artifact_path is not None
+            else f"models:/{self.registered_model_name}@{self.model_alias}"
         )
         self.model_loaded_at = _utc_now()
+        self._model_info_labels = {
+            "model_name": self.registered_model_name,
+            "alias": self.model_alias,
+            "version": self.model_version or "unknown",
+            "candidate_name": self.source_candidate_name or "unknown",
+        }
         MODEL_INFO.labels(
             model_name=self.registered_model_name,
             alias=self.model_alias,
@@ -253,6 +291,13 @@ def predict(payload: PredictRequest, request: Request) -> dict[str, Any]:
         return service.predict(payload, client_host=request.client.host if request.client else None)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/reload-model")
+def reload_model(request: Request) -> dict[str, Any]:
+    service = _get_service(request)
+    service.load_model()
+    return service.health()
 
 
 def main(argv: list[str] | None = None) -> int:
