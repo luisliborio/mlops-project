@@ -579,6 +579,7 @@ def run_lifecycle_retraining(
             baseline_snapshot_path=state.get("baseline_snapshot_path"),
             force_refresh=True,
         )
+        clear_labeled_batches(state)
         state["baseline_snapshot_path"] = baseline_reference["summary_path"]
         state["baseline_reference"] = baseline_reference
         state["latest_monitoring_summary_path"] = None

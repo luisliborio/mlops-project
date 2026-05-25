@@ -178,7 +178,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 6
       },
@@ -283,7 +283,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 14
+        "y": 6
       },
       "id": 9,
       "options": {
@@ -320,5 +320,5 @@
   "timezone": "browser",
   "title": "MNIST Lifecycle Unsupervised",
   "uid": "mnist-lifecycle-unsupervised",
-  "version": 3
+  "version": 4
 }
