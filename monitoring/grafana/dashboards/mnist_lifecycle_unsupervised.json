@@ -263,13 +263,42 @@
         {
           "expr": "mnist_lifecycle_unsupervised_latency_ms",
           "refId": "A"
-        },
-        {
-          "expr": "mnist_lifecycle_unsupervised_histogram_js_divergence",
-          "refId": "B"
         }
       ],
-      "title": "Latency And Drift Trend",
+      "title": "Latency Trend",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "mnist_lifecycle_unsupervised_histogram_js_divergence",
+          "refId": "A"
+        }
+      ],
+      "title": "Histogram JS Divergence Trend",
       "type": "timeseries"
     }
   ],
@@ -291,5 +320,5 @@
   "timezone": "browser",
   "title": "MNIST Lifecycle Unsupervised",
   "uid": "mnist-lifecycle-unsupervised",
-  "version": 2
+  "version": 3
 }
