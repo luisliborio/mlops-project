@@ -10,7 +10,6 @@ import mlflow
 import mlflow.tensorflow
 import numpy as np
 import yaml
-from dotenv import dotenv_values
 from mlflow.tracking import MlflowClient
 from sklearn.metrics import accuracy_score, f1_score
 
@@ -22,6 +21,7 @@ from mlops_mnist.utils.mlflow_compat import (
     resolve_runtime_write_path,
     serialize_repo_bound_path,
 )
+from mlops_mnist.utils.runtime import load_runtime_config, resolve_tracking_uri
 
 
 MODEL_ALIAS = "production"
@@ -66,9 +66,8 @@ def evaluate_registered_model(
     mlflow.set_tracking_uri(tracking_uri)
     client = MlflowClient()
     version_info = client.get_model_version_by_alias(resolved_model_name, alias)
-    model_artifact_path = resolve_runtime_model_artifact_path(repo_root, version_info.source)
     loaded_model = mlflow.tensorflow.load_model(
-        model_artifact_path.as_posix() if model_artifact_path is not None else f"models:/{resolved_model_name}@{alias}"
+        f"models:/{resolved_model_name}/{version_info.version}"
     )
     production_reference_data = resolve_training_reference_metadata(repo_root, version_info.tags)
 
@@ -207,17 +206,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _load_runtime_config(repo_root: Path) -> dict[str, str]:
-    config: dict[str, str] = {}
-
-    example_path = repo_root / ".env.example"
-    env_path = repo_root / ".env"
-
-    if example_path.exists():
-        config.update({key: value for key, value in dotenv_values(example_path).items() if value})
-    if env_path.exists():
-        config.update({key: value for key, value in dotenv_values(env_path).items() if value})
-
-    return config
+    return load_runtime_config(repo_root)
 
 
 def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
@@ -225,14 +214,7 @@ def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
 
 
 def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
-    if raw_tracking_uri.startswith("sqlite:////"):
-        return raw_tracking_uri
-
-    if raw_tracking_uri.startswith("sqlite:///"):
-        database_path = (repo_root / raw_tracking_uri.removeprefix("sqlite:///" )).resolve()
-        return f"sqlite:///{database_path.as_posix()}"
-
-    return raw_tracking_uri
+    return resolve_tracking_uri(repo_root, raw_tracking_uri)
 
 
 def _resolve_batch_specs(

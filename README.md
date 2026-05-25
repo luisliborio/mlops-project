@@ -52,11 +52,25 @@ pip install -r requirements.txt
 
 After the environment is installed, the simplest way to bring the project up is through the Streamlit UI.
 
+```bash
+.venv/bin/python run_system.py
+```
+
+That command starts the API, the Streamlit UI, and the local MLflow UI.
+
 1. start the API service
 2. start the UI
 3. open the `Initial Setup` page
 4. run `dvc repro`
 5. run the initial training flow, which automatically promotes the winner
+
+If you prefer to run the services separately, use `.venv/bin/python scripts/run_api.py` for the API and `streamlit run scripts/run_ui.py` for the UI.
+
+The local service URLs are:
+
+- API: `http://127.0.0.1:8000`
+- Streamlit UI: `http://127.0.0.1:8501`
+- MLflow UI: `http://127.0.0.1:5000`
 
 The `Initial Setup` page stays available after bootstrap and also exposes a hard reset back to the empty pre-setup state when you want to rerun the project from scratch after changing `params.yaml`.
 

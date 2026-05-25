@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,6 @@ from typing import Any
 import mlflow
 import mlflow.tensorflow
 import yaml
-from dotenv import dotenv_values
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient, _tracking_service, fluent
 from mlflow.tracking._model_registry import utils as _model_registry_utils
@@ -32,6 +32,7 @@ from mlops_mnist.setup_state import (
 )
 from mlops_mnist.ui.lifecycle import reset_lifecycle_state
 from mlops_mnist.utils.mlflow_compat import prepare_local_tracking_uri, resolve_runtime_write_path
+from mlops_mnist.utils.runtime import load_runtime_config, resolve_artifact_root, resolve_tracking_uri
 
 
 APP_RESET_SEED_PATH = Path("configs/app_reset_seed.json")
@@ -39,7 +40,6 @@ RESET_REPORT_RELATIVE_PATH = Path("artifacts/registry/reset_to_initial_state/pro
 HEX_ARTIFACT_DIR_RE = re.compile(r"^[0-9a-f]{32}$")
 GENERATED_PATHS = (
     Path(".runtime"),
-    Path("mlflow.db"),
     Path("mlruns"),
     Path("artifacts/evaluation"),
     Path("artifacts/evaluation_smoke_fix"),
@@ -72,6 +72,7 @@ def reset_application_state(
     seed = _load_reset_seed(repo_root, seed_path)
 
     _reset_mlflow_runtime_state()
+    _clear_local_tracking_database(repo_root)
     removed_paths = _clear_generated_state(repo_root)
     mlflow_reset = _bootstrap_initial_mlflow_state(repo_root, params_path, seed)
     lifecycle_state = reset_lifecycle_state(
@@ -113,6 +114,7 @@ def reset_to_pre_setup_state(
     repo_root = Path(repo_root).resolve()
 
     _reset_mlflow_runtime_state()
+    _clear_local_tracking_database(repo_root)
     removed_paths = _clear_generated_state(repo_root, extra_paths=EMPTY_RESET_EXTRA_PATHS)
     removed_paths.extend(_clear_repo_paths(repo_root, list_dvc_output_paths(repo_root, dvc_path=dvc_path)))
     removed_paths = sorted(dict.fromkeys(removed_paths))
@@ -315,6 +317,52 @@ def _clear_generated_state(repo_root: Path, extra_paths: tuple[Path, ...] = ()) 
     return sorted(removed_paths)
 
 
+def _clear_local_tracking_database(repo_root: Path) -> bool:
+    # Clear MLflow rows in place so a running MLflow UI sees the reset on refresh.
+    runtime_config = _load_runtime_config(repo_root)
+    tracking_uri = _resolve_tracking_uri(
+        repo_root,
+        runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
+    )
+    database_path = _resolve_sqlite_database_path(tracking_uri)
+    if database_path is None or not database_path.exists():
+        return False
+
+    try:
+        _clear_sqlite_tables(database_path)
+    except sqlite3.DatabaseError:
+        return _remove_path(database_path)
+
+    return True
+
+
+def _resolve_sqlite_database_path(tracking_uri: str) -> Path | None:
+    if tracking_uri.startswith("sqlite:////"):
+        return Path(tracking_uri.removeprefix("sqlite:///"))
+
+    if tracking_uri.startswith("sqlite:///"):
+        return Path(tracking_uri.removeprefix("sqlite:///"))
+
+    return None
+
+
+def _clear_sqlite_tables(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        table_names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall()
+        ]
+        for table_name in table_names:
+            if table_name == "alembic_version":
+                continue
+            escaped_table_name = table_name.replace('"', '""')
+            connection.execute(f'DELETE FROM "{escaped_table_name}"')
+        connection.commit()
+
+
 def _clear_repo_paths(repo_root: Path, relative_paths: list[Path] | tuple[Path, ...]) -> list[str]:
     removed_paths: list[str] = []
     for relative_path in relative_paths:
@@ -403,33 +451,15 @@ def _load_project_params(params_path: Path) -> dict[str, Any]:
 
 
 def _load_runtime_config(repo_root: Path) -> dict[str, str]:
-    config: dict[str, str] = {}
-    example_path = repo_root / ".env.example"
-    env_path = repo_root / ".env"
-
-    if example_path.exists():
-        config.update({key: value for key, value in dotenv_values(example_path).items() if value})
-    if env_path.exists():
-        config.update({key: value for key, value in dotenv_values(env_path).items() if value})
-
-    return config
+    return load_runtime_config(repo_root)
 
 
 def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
-    if raw_tracking_uri.startswith("sqlite:////"):
-        return raw_tracking_uri
-
-    if raw_tracking_uri.startswith("sqlite:///"):
-        database_path = (repo_root / raw_tracking_uri.removeprefix("sqlite:///" )).resolve()
-        return f"sqlite:///{database_path.as_posix()}"
-
-    return raw_tracking_uri
+    return resolve_tracking_uri(repo_root, raw_tracking_uri)
 
 
 def _resolve_artifact_root(repo_root: Path, raw_artifact_root: str) -> Path:
-    artifact_root = resolve_runtime_write_path(repo_root, raw_artifact_root)
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    return artifact_root
+    return resolve_artifact_root(repo_root, {"MLFLOW_ARTIFACT_ROOT": raw_artifact_root})
 
 
 def _ensure_experiment(experiment_name: str, artifact_root: Path) -> None:

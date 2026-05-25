@@ -13,7 +13,6 @@ import mlflow
 import mlflow.tensorflow
 import numpy as np
 import yaml
-from dotenv import dotenv_values
 from mlflow.tracking import MlflowClient
 from sklearn.metrics import accuracy_score, f1_score
 from tensorflow import keras
@@ -34,6 +33,7 @@ from mlops_mnist.utils.mlflow_compat import (
     resolve_runtime_model_artifact_path,
     resolve_runtime_write_path,
 )
+from mlops_mnist.utils.runtime import load_runtime_config, resolve_artifact_root, resolve_tracking_uri
 
 
 MODEL_READY_POLL_SECONDS = 1.0
@@ -106,12 +106,7 @@ def run_retraining_workflow(
     mlflow.set_experiment(experiment_name)
     client = MlflowClient()
     production_version = client.get_model_version_by_alias(resolved_model_name, alias)
-    production_model_path = resolve_runtime_model_artifact_path(repo_root, production_version.source)
-    production_uri = (
-        production_model_path.as_posix()
-        if production_model_path is not None
-        else f"models:/{resolved_model_name}@{alias}"
-    )
+    production_uri = f"models:/{resolved_model_name}/{production_version.version}"
     current_training_reference = load_training_reference_data(repo_root, production_version.tags)
 
     monitoring_summary = _resolve_monitoring_summary(
@@ -936,17 +931,7 @@ def _wait_for_model_version(client: MlflowClient, model_name: str, version: str 
 
 
 def _load_runtime_config(repo_root: Path) -> dict[str, str]:
-    config: dict[str, str] = {}
-
-    example_path = repo_root / ".env.example"
-    env_path = repo_root / ".env"
-
-    if example_path.exists():
-        config.update({key: value for key, value in dotenv_values(example_path).items() if value})
-    if env_path.exists():
-        config.update({key: value for key, value in dotenv_values(env_path).items() if value})
-
-    return config
+    return load_runtime_config(repo_root)
 
 
 def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
@@ -954,20 +939,11 @@ def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
 
 
 def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
-    if raw_tracking_uri.startswith("sqlite:////"):
-        return raw_tracking_uri
-
-    if raw_tracking_uri.startswith("sqlite:///"):
-        database_path = (repo_root / raw_tracking_uri.removeprefix("sqlite:///" )).resolve()
-        return f"sqlite:///{database_path.as_posix()}"
-
-    return raw_tracking_uri
+    return resolve_tracking_uri(repo_root, raw_tracking_uri)
 
 
 def _resolve_artifact_root(repo_root: Path, raw_artifact_root: str) -> Path:
-    artifact_root = resolve_runtime_write_path(repo_root, raw_artifact_root)
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    return artifact_root
+    return resolve_artifact_root(repo_root, {"MLFLOW_ARTIFACT_ROOT": raw_artifact_root})
 
 
 def _ensure_experiment(experiment_name: str, artifact_root: Path) -> None:

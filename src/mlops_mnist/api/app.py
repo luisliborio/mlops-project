@@ -14,7 +14,6 @@ import mlflow.tensorflow
 import numpy as np
 import uvicorn
 import yaml
-from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, Request, Response
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
@@ -22,6 +21,11 @@ from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, Summary, generate_latest
 
 from mlops_mnist.app_reset import _reset_mlflow_runtime_state
+from mlops_mnist.utils.runtime import (
+    load_runtime_config,
+    resolve_runtime_port,
+    resolve_tracking_uri,
+)
 from mlops_mnist.utils.mlflow_compat import (
     prepare_local_tracking_uri,
     resolve_runtime_model_artifact_path,
@@ -122,11 +126,8 @@ class InferenceService:
         self.model_version = str(version_info.version)
         self.source_training_run_id = version_info.tags.get("source_training_run_id")
         self.source_candidate_name = version_info.tags.get("candidate_name")
-        model_artifact_path = resolve_runtime_model_artifact_path(self.repo_root, version_info.source)
         self.model = mlflow.tensorflow.load_model(
-            model_artifact_path.as_posix()
-            if model_artifact_path is not None
-            else f"models:/{self.registered_model_name}@{self.model_alias}"
+            f"models:/{self.registered_model_name}/{self.model_version}"
         )
         self.model_loaded_at = _utc_now()
         self._model_info_labels = {
@@ -239,7 +240,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MNIST Production Inference API",
-    version="0.1.0",
+    version="7.3.0",
     lifespan=lifespan,
 )
 
@@ -317,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(__file__).resolve().parents[3]
     runtime_config = _load_runtime_config(repo_root)
     host = args.host or runtime_config.get("API_HOST", "0.0.0.0")
-    port = args.port or int(runtime_config.get("API_PORT", "8000"))
+    port = args.port or resolve_runtime_port(runtime_config, "API_PORT", 8000)
     uvicorn.run(app, host=host, port=port)
     return 0
 
@@ -330,28 +331,11 @@ def _get_service(request: Request) -> InferenceService:
 
 
 def _load_runtime_config(repo_root: Path) -> dict[str, str]:
-    config: dict[str, str] = {}
-
-    example_path = repo_root / ".env.example"
-    env_path = repo_root / ".env"
-
-    if example_path.exists():
-        config.update({key: value for key, value in dotenv_values(example_path).items() if value})
-    if env_path.exists():
-        config.update({key: value for key, value in dotenv_values(env_path).items() if value})
-
-    return config
+    return load_runtime_config(repo_root)
 
 
 def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
-    if raw_tracking_uri.startswith("sqlite:////"):
-        return raw_tracking_uri
-
-    if raw_tracking_uri.startswith("sqlite:///"):
-        database_path = (repo_root / raw_tracking_uri.removeprefix("sqlite:///" )).resolve()
-        return f"sqlite:///{database_path.as_posix()}"
-
-    return raw_tracking_uri
+    return resolve_tracking_uri(repo_root, raw_tracking_uri)
 
 
 def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:

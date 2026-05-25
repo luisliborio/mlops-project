@@ -11,7 +11,6 @@ import mlflow
 import mlflow.tensorflow
 import numpy as np
 import yaml
-from dotenv import dotenv_values
 from mlflow.tracking import MlflowClient
 from tensorflow import keras
 
@@ -20,6 +19,7 @@ from mlops_mnist.utils.mlflow_compat import (
     resolve_runtime_model_artifact_path,
     resolve_runtime_write_path,
 )
+from mlops_mnist.utils.runtime import load_runtime_config, resolve_artifact_root, resolve_tracking_uri
 
 
 MODEL_ALIAS = "production"
@@ -74,29 +74,33 @@ def promote_best_model(
     summary_payload = json.loads(selected_summary_path.read_text(encoding="utf-8"))
     selected_result = _select_result(summary_payload, candidate_name)
 
-    model_path = _resolve_path(repo_root, selected_result["model_path"])
-    if not model_path.exists():
-        raise FileNotFoundError(f"Saved model file not found: {model_path}")
-
     resolved_model_name = registered_model_name or params["project"]["registered_model_name"]
     report_dir = resolve_runtime_write_path(repo_root, "artifacts/registry") / datetime.now().strftime("%Y%m%d_%H%M%S")
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    model = keras.models.load_model(model_path)
+    selected_model_uri = _resolve_selected_model_uri(selected_result)
+    fallback_model_path: Path | None = None
+    if selected_model_uri is None:
+        fallback_model_path = _resolve_path(repo_root, selected_result["model_path"])
+        if not fallback_model_path.exists():
+            raise FileNotFoundError(f"Saved model file not found: {fallback_model_path}")
+
     run_name = f"promote-{selected_result['candidate_name']}-{report_dir.name}"
     with mlflow.start_run(run_name=run_name) as run:
-        mlflow.log_params(
-            {
-                "selection_rule": "best_validation_accuracy,test_accuracy,validation_macro_f1",
-                "selected_candidate": selected_result["candidate_name"],
-                "source_training_run_id": selected_result["run_id"],
-                "source_summary": str(selected_summary_path.relative_to(repo_root)),
-                "source_model_path": str(model_path.relative_to(repo_root)),
-                "registered_model_name": resolved_model_name,
-                "registered_alias": alias,
-                "verify_samples": verify_samples,
-            }
-        )
+        params_payload = {
+            "selection_rule": "best_validation_accuracy,test_accuracy,validation_macro_f1",
+            "selected_candidate": selected_result["candidate_name"],
+            "source_training_run_id": selected_result["run_id"],
+            "source_summary": str(selected_summary_path.relative_to(repo_root)),
+            "registered_model_name": resolved_model_name,
+            "registered_alias": alias,
+            "verify_samples": verify_samples,
+        }
+        if selected_model_uri is not None:
+            params_payload["source_model_uri"] = selected_model_uri
+        if selected_result.get("model_path"):
+            params_payload["source_model_path"] = str(selected_result["model_path"])
+        mlflow.log_params(params_payload)
         mlflow.log_metrics(
             {
                 "selected_best_validation_accuracy": float(selected_result["best_validation_accuracy"]),
@@ -106,14 +110,19 @@ def promote_best_model(
             }
         )
 
-        mlflow.tensorflow.log_model(model, artifact_path="model")
         promotion_report_path = report_dir / "promotion_summary.json"
         verification_path = report_dir / "verification_predictions.json"
 
         mlflow.log_artifact(str(selected_summary_path), artifact_path="selection")
 
+        registration_model_uri = selected_model_uri
+        if registration_model_uri is None:
+            model = keras.models.load_model(fallback_model_path)
+            mlflow.tensorflow.log_model(model, artifact_path="model")
+            registration_model_uri = f"runs:/{run.info.run_id}/model"
+
         registered_version = mlflow.register_model(
-            model_uri=f"runs:/{run.info.run_id}/model",
+            model_uri=registration_model_uri,
             name=resolved_model_name,
         )
         _wait_for_model_version(client, resolved_model_name, registered_version.version)
@@ -209,17 +218,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _load_runtime_config(repo_root: Path) -> dict[str, str]:
-    config: dict[str, str] = {}
-
-    example_path = repo_root / ".env.example"
-    env_path = repo_root / ".env"
-
-    if example_path.exists():
-        config.update({key: value for key, value in dotenv_values(example_path).items() if value})
-    if env_path.exists():
-        config.update({key: value for key, value in dotenv_values(env_path).items() if value})
-
-    return config
+    return load_runtime_config(repo_root)
 
 
 def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
@@ -230,20 +229,11 @@ def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
 
 
 def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
-    if raw_tracking_uri.startswith("sqlite:////"):
-        return raw_tracking_uri
-
-    if raw_tracking_uri.startswith("sqlite:///"):
-        database_path = (repo_root / raw_tracking_uri.removeprefix("sqlite:///" )).resolve()
-        return f"sqlite:///{database_path.as_posix()}"
-
-    return raw_tracking_uri
+    return resolve_tracking_uri(repo_root, raw_tracking_uri)
 
 
 def _resolve_artifact_root(repo_root: Path, raw_artifact_root: str) -> Path:
-    artifact_root = resolve_runtime_write_path(repo_root, raw_artifact_root)
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    return artifact_root
+    return resolve_artifact_root(repo_root, {"MLFLOW_ARTIFACT_ROOT": raw_artifact_root})
 
 
 def _ensure_experiment(experiment_name: str, artifact_root: Path) -> None:
@@ -292,6 +282,13 @@ def _select_result(summary_payload: dict[str, Any], candidate_name: str | None) 
     )
 
 
+def _resolve_selected_model_uri(selected_result: dict[str, Any]) -> str | None:
+    model_uri = selected_result.get("model_uri")
+    if model_uri is None:
+        return None
+    return str(model_uri)
+
+
 def _wait_for_model_version(client: MlflowClient, model_name: str, version: str | int) -> None:
     for _ in range(MODEL_READY_MAX_POLLS):
         model_version = client.get_model_version(model_name, str(version))
@@ -324,9 +321,8 @@ def _verify_registered_model(
     sample_labels = labels[:verify_samples]
     client = MlflowClient()
     version_info = client.get_model_version_by_alias(registered_model_name, alias)
-    model_artifact_path = resolve_runtime_model_artifact_path(repo_root, version_info.source)
     loaded_model = mlflow.tensorflow.load_model(
-        model_artifact_path.as_posix() if model_artifact_path is not None else f"models:/{registered_model_name}@{alias}"
+        f"models:/{registered_model_name}/{version_info.version}"
     )
     probabilities = loaded_model.predict(sample_images, verbose=0)
     predicted_labels = np.argmax(probabilities, axis=1)

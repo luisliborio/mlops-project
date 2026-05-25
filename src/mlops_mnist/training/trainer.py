@@ -8,14 +8,15 @@ from pathlib import Path
 from typing import Any
 
 import mlflow
+import mlflow.tensorflow
 import numpy as np
 import yaml
-from dotenv import dotenv_values
 from mlflow.tracking import MlflowClient
 from sklearn.metrics import f1_score
 from tensorflow import keras
 
 from mlops_mnist.utils.mlflow_compat import prepare_local_tracking_uri, resolve_runtime_write_path
+from mlops_mnist.utils.runtime import load_runtime_config, resolve_artifact_root, resolve_tracking_uri
 
 
 EARLY_STOPPING_PATIENCE = 5
@@ -155,10 +156,11 @@ def train_candidates(
             _write_json(history_path, history.history)
             _write_json(metrics_path, metrics)
 
+            model_uri = f"runs:/{run.info.run_id}/model"
+            mlflow.tensorflow.log_model(model, artifact_path="model")
             mlflow.log_metrics(metrics)
             mlflow.log_artifact(str(history_path), artifact_path="reports")
             mlflow.log_artifact(str(metrics_path), artifact_path="reports")
-            mlflow.log_artifact(str(model_path), artifact_path="model")
             if manifest_path.exists():
                 mlflow.log_artifact(str(manifest_path), artifact_path="data")
 
@@ -166,6 +168,7 @@ def train_candidates(
                 {
                     "candidate_name": candidate["name"],
                     "run_id": run.info.run_id,
+                    "model_uri": model_uri,
                     "model_path": str(model_path.relative_to(repo_root)),
                     **metrics,
                 }
@@ -267,34 +270,15 @@ def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
 
 
 def _load_runtime_config(repo_root: Path) -> dict[str, str]:
-    config: dict[str, str] = {}
-
-    example_path = repo_root / ".env.example"
-    env_path = repo_root / ".env"
-
-    if example_path.exists():
-        config.update({key: value for key, value in dotenv_values(example_path).items() if value})
-    if env_path.exists():
-        config.update({key: value for key, value in dotenv_values(env_path).items() if value})
-
-    return config
+    return load_runtime_config(repo_root)
 
 
 def _resolve_tracking_uri(repo_root: Path, raw_tracking_uri: str) -> str:
-    if raw_tracking_uri.startswith("sqlite:////"):
-        return raw_tracking_uri
-
-    if raw_tracking_uri.startswith("sqlite:///"):
-        database_path = (repo_root / raw_tracking_uri.removeprefix("sqlite:///" )).resolve()
-        return f"sqlite:///{database_path.as_posix()}"
-
-    return raw_tracking_uri
+    return resolve_tracking_uri(repo_root, raw_tracking_uri)
 
 
 def _resolve_artifact_root(repo_root: Path, raw_artifact_root: str) -> Path:
-    artifact_root = resolve_runtime_write_path(repo_root, raw_artifact_root)
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    return artifact_root
+    return resolve_artifact_root(repo_root, {"MLFLOW_ARTIFACT_ROOT": raw_artifact_root})
 
 
 def _ensure_experiment(experiment_name: str, artifact_root: Path) -> None:
@@ -416,6 +400,7 @@ def _write_comparison_csv(path: Path, results: list[dict[str, Any]]) -> None:
     fieldnames = [
         "candidate_name",
         "run_id",
+        "model_uri",
         "best_validation_accuracy",
         "validation_macro_f1",
         "test_accuracy",

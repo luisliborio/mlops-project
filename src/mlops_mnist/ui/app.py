@@ -11,7 +11,6 @@ import pandas as pd
 import requests
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
-from dotenv import dotenv_values
 
 from mlops_mnist.monitoring.prometheus_exporter import (
     DEFAULT_LIFECYCLE_METRICS_PORT,
@@ -50,6 +49,7 @@ from mlops_mnist.ui.lifecycle import (
     switch_lifecycle_batch,
 )
 from mlops_mnist.utils.mlflow_compat import resolve_repo_bound_path
+from mlops_mnist.utils.runtime import load_runtime_config, resolve_runtime_port
 
 
 REQUEST_TIMEOUT_SECONDS = 30
@@ -443,16 +443,7 @@ def _render_lifecycle_simulation(
 
 
 def _load_runtime_config(repo_root: Path) -> dict[str, str]:
-    config: dict[str, str] = {}
-    example_path = repo_root / ".env.example"
-    env_path = repo_root / ".env"
-
-    if example_path.exists():
-        config.update({key: value for key, value in dotenv_values(example_path).items() if value})
-    if env_path.exists():
-        config.update({key: value for key, value in dotenv_values(env_path).items() if value})
-
-    return config
+    return load_runtime_config(repo_root)
 
 
 def _default_api_base_url(runtime_config: dict[str, str]) -> str:
@@ -469,6 +460,7 @@ def _initialize_lifecycle_monitoring(repo_root: Path, runtime_config: dict[str, 
     )
     prometheus_port = _resolve_runtime_port(runtime_config, "PROMETHEUS_PORT", 9090)
     grafana_port = _resolve_runtime_port(runtime_config, "GRAFANA_PORT", 3000)
+    mlflow_port = _resolve_runtime_port(runtime_config, "MLFLOW_UI_PORT", 5000)
 
     exporter_ready = ensure_lifecycle_metrics_server(exporter_port)
     sync_lifecycle_state_metrics(lifecycle_state)
@@ -477,17 +469,12 @@ def _initialize_lifecycle_monitoring(repo_root: Path, runtime_config: dict[str, 
         "exporter_port": exporter_port,
         "prometheus_url": f"http://127.0.0.1:{prometheus_port}",
         "grafana_url": f"http://127.0.0.1:{grafana_port}",
+        "mlflow_url": f"http://127.0.0.1:{mlflow_port}",
     }
 
 
 def _resolve_runtime_port(runtime_config: dict[str, str], key: str, default: int) -> int:
-    raw_value = runtime_config.get(key)
-    if raw_value is None:
-        return int(default)
-    try:
-        return int(raw_value)
-    except (TypeError, ValueError):
-        return int(default)
+    return resolve_runtime_port(runtime_config, key, default)
 
 
 @st.cache_data(show_spinner=False)
@@ -1190,10 +1177,12 @@ def _render_monitoring_links(monitoring_status: dict[str, Any] | None = None) ->
     monitoring_status = monitoring_status or {}
     grafana_url = str(monitoring_status.get("grafana_url", "http://127.0.0.1:3000"))
     prometheus_url = str(monitoring_status.get("prometheus_url", "http://127.0.0.1:9090"))
+    mlflow_url = str(monitoring_status.get("mlflow_url", "http://127.0.0.1:5000"))
     st.markdown("#### Monitoring")
-    button_col1, button_col2 = st.columns(2)
+    button_col1, button_col2, button_col3 = st.columns(3)
     button_col1.link_button("Open Prometheus", prometheus_url, use_container_width=True)
     button_col2.link_button("Open Grafana", grafana_url, use_container_width=True)
+    button_col3.link_button("Open MLflow", mlflow_url, use_container_width=True)
 
 
 def _render_lifecycle_history_tables(state: dict[str, Any]) -> None:
