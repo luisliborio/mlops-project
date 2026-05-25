@@ -29,7 +29,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from mlops_mnist.app_reset import ensure_initial_production_alias
+from mlops_mnist.app_reset import _reset_mlflow_runtime_state
 
 
 MODEL_ALIAS = "production"
@@ -98,6 +98,7 @@ class InferenceService:
         self._model_info_labels: dict[str, str] | None = None
 
     def load_model(self) -> None:
+        _reset_mlflow_runtime_state()
         self.tracking_uri = prepare_runtime_tracking_uri(self.repo_root, self.runtime_config)
         mlflow.set_tracking_uri(self.tracking_uri)
         client = MlflowClient()
@@ -107,17 +108,10 @@ class InferenceService:
         try:
             version_info = client.get_model_version_by_alias(self.registered_model_name, self.model_alias)
         except MlflowException as exc:
-            recovered = ensure_initial_production_alias(
-                repo_root=self.repo_root,
-                params_path=self.repo_root / "params.yaml",
-            )
-            if recovered is None:
-                raise exc
-
-            self.tracking_uri = prepare_runtime_tracking_uri(self.repo_root, self.runtime_config)
-            mlflow.set_tracking_uri(self.tracking_uri)
-            client = MlflowClient()
-            version_info = client.get_model_version_by_alias(self.registered_model_name, self.model_alias)
+            if is_expected_missing_model_error(exc):
+                self.mark_model_unavailable()
+                return
+            raise
 
         model_artifact_path = prepare_runtime_model_artifact(self.repo_root, version_info.source)
 
@@ -135,6 +129,14 @@ class InferenceService:
             "candidate_name": self.source_candidate_name or "unknown",
         }
         MODEL_INFO.labels(**self._model_info_labels).set(1)
+
+    def mark_model_unavailable(self) -> None:
+        self.model = None
+        self.model_version = None
+        self.model_loaded_at = None
+        self.source_training_run_id = None
+        self.source_candidate_name = None
+        self._model_info_labels = None
 
     def predict(self, request_payload: PredictRequest, client_host: str | None) -> dict[str, Any]:
         if self.model is None:
@@ -249,7 +251,7 @@ def prepare_runtime_tracking_uri(repo_root: Path, runtime_config: dict[str, str]
 
     runtime_database_path = ensure_runtime_path(repo_root / "mlflow.db")
     runtime_database_path.parent.mkdir(parents=True, exist_ok=True)
-    if database_path.resolve() != runtime_database_path.resolve():
+    if database_path.exists() and database_path.resolve() != runtime_database_path.resolve():
         shutil.copy2(database_path, runtime_database_path)
     return f"sqlite:///{runtime_database_path.as_posix()}"
 
@@ -391,6 +393,16 @@ def predict(payload: PredictRequest, request: Request) -> dict[str, Any]:
         return service.predict(payload, client_host=request.client.host if request.client else None)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+def is_expected_missing_model_error(exc: Exception) -> bool:
+    if not isinstance(exc, MlflowException):
+        return False
+
+    message = str(exc).lower()
+    return "registered model" in message and "not found" in message
 
 
 @app.post("/reload-model")

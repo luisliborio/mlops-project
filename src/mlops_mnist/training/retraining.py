@@ -141,8 +141,6 @@ def run_retraining_workflow(
                 "accepted": False,
                 "action": "keep_production",
                 "reason": "monitoring_thresholds_not_met",
-                "accuracy_gain": 0.0,
-                "required_accuracy_gain": acceptance_policy["min_adaptation_accuracy_gain"],
                 "adaptation_accuracy_gain": 0.0,
                 "required_adaptation_accuracy_gain": acceptance_policy["min_adaptation_accuracy_gain"],
                 "benchmark_accuracy_change": 0.0,
@@ -394,6 +392,8 @@ def run_retraining_workflow(
             "batch_path_before": current_training_reference["batch_path"],
             "num_examples_before": current_training_reference["num_examples"],
             "recent_examples_added": len(batch_payload["images"]),
+            "recent_train_examples": len(adaptation_split["train_labels"]),
+            "recent_adaptation_test_examples": len(adaptation_split["adaptation_labels"]),
             "batch_name_after": (
                 promoted_training_reference["batch_name"]
                 if promoted_training_reference is not None
@@ -461,7 +461,9 @@ def decide_challenger_promotion(
     benchmark_accuracy_change = float(
         challenger_benchmark_metrics["accuracy"] - production_benchmark_metrics["accuracy"]
     )
-    benchmark_accuracy_regression = max(0.0, -benchmark_accuracy_change)
+    benchmark_accuracy_regression = float(
+        production_benchmark_metrics["accuracy"] - challenger_benchmark_metrics["accuracy"]
+    )
     adaptation_gate_met = adaptation_accuracy_gain >= float(min_adaptation_accuracy_gain)
     benchmark_gate_met = benchmark_accuracy_regression <= float(max_benchmark_accuracy_regression)
     accepted = adaptation_gate_met and benchmark_gate_met
@@ -482,8 +484,6 @@ def decide_challenger_promotion(
         "accepted": accepted,
         "action": action,
         "reason": reason,
-        "accuracy_gain": adaptation_accuracy_gain,
-        "required_accuracy_gain": float(min_adaptation_accuracy_gain),
         "adaptation_accuracy_gain": adaptation_accuracy_gain,
         "required_adaptation_accuracy_gain": float(min_adaptation_accuracy_gain),
         "benchmark_accuracy_change": benchmark_accuracy_change,

@@ -23,6 +23,13 @@ from mlops_mnist.training.reference_data import (
     TRAINING_REFERENCE_SIZE_TAG,
     resolve_training_reference_metadata,
 )
+from mlops_mnist.setup_state import (
+    SETUP_MODE_EMPTY,
+    SETUP_MODE_INITIALIZED,
+    SETUP_STATUS_RELATIVE_PATH,
+    list_dvc_output_paths,
+    record_setup_action,
+)
 from mlops_mnist.ui.lifecycle import reset_lifecycle_state
 from mlops_mnist.utils.mlflow_compat import prepare_local_tracking_uri, resolve_runtime_write_path
 
@@ -43,9 +50,15 @@ GENERATED_PATHS = (
     Path("artifacts/registry"),
     Path("artifacts/retraining"),
     Path("artifacts/smoke"),
+    Path("artifacts/ui_setup"),
     Path("artifacts/ui_lifecycle"),
     Path("logs/predictions"),
     Path("models/retraining"),
+)
+EMPTY_RESET_EXTRA_PATHS = (
+    Path("artifacts/training"),
+    Path("data/processed/training_references"),
+    Path("models/training"),
 )
 
 
@@ -70,7 +83,7 @@ def reset_application_state(
         record_mode=bool(seed.get("default_record_mode", False)),
     )
 
-    return {
+    summary = {
         "removed_paths": removed_paths,
         "mlflow_reset": mlflow_reset,
         "lifecycle": {
@@ -78,6 +91,48 @@ def reset_application_state(
             "batch_size": lifecycle_state["batch_size"],
             "record_mode": lifecycle_state["record_mode"],
             "state_path": str((repo_root / "artifacts" / "ui_lifecycle" / "active_session.json").relative_to(repo_root)),
+        },
+    }
+    record_setup_action(
+        repo_root,
+        action_name="restore_seeded_production_state",
+        outcome="success",
+        message="Restored the seeded production-v1 state.",
+        mode=SETUP_MODE_INITIALIZED,
+        metadata={
+            "registered_version": summary["mlflow_reset"]["registered_version"],
+        },
+    )
+    return summary
+
+
+def reset_to_pre_setup_state(
+    repo_root: str | Path,
+    dvc_path: str | Path = "dvc.yaml",
+) -> dict[str, Any]:
+    repo_root = Path(repo_root).resolve()
+
+    _reset_mlflow_runtime_state()
+    removed_paths = _clear_generated_state(repo_root, extra_paths=EMPTY_RESET_EXTRA_PATHS)
+    removed_paths.extend(_clear_repo_paths(repo_root, list_dvc_output_paths(repo_root, dvc_path=dvc_path)))
+    removed_paths = sorted(dict.fromkeys(removed_paths))
+    action = record_setup_action(
+        repo_root,
+        action_name="hard_reset_to_pre_setup_state",
+        outcome="success",
+        message="Removed generated data, models, and MLflow state. The project is back to the empty pre-setup state.",
+        mode=SETUP_MODE_EMPTY,
+        metadata={
+            "removed_paths": removed_paths,
+        },
+    )
+
+    return {
+        "removed_paths": removed_paths,
+        "setup": {
+            "mode": SETUP_MODE_EMPTY,
+            "status_path": str(SETUP_STATUS_RELATIVE_PATH),
+            "last_action": action,
         },
     }
 
@@ -247,12 +302,8 @@ def _bootstrap_initial_mlflow_state(
     }
 
 
-def _clear_generated_state(repo_root: Path) -> list[str]:
-    removed_paths: list[str] = []
-    for relative_path in GENERATED_PATHS:
-        candidate = (repo_root / relative_path).resolve()
-        if _remove_path(candidate):
-            removed_paths.append(str(candidate.relative_to(repo_root)))
+def _clear_generated_state(repo_root: Path, extra_paths: tuple[Path, ...] = ()) -> list[str]:
+    removed_paths = _clear_repo_paths(repo_root, GENERATED_PATHS + extra_paths)
 
     artifacts_root = (repo_root / "artifacts").resolve()
     if artifacts_root.exists():
@@ -262,6 +313,15 @@ def _clear_generated_state(repo_root: Path) -> list[str]:
                     removed_paths.append(str(child.relative_to(repo_root)))
 
     return sorted(removed_paths)
+
+
+def _clear_repo_paths(repo_root: Path, relative_paths: list[Path] | tuple[Path, ...]) -> list[str]:
+    removed_paths: list[str] = []
+    for relative_path in relative_paths:
+        candidate = (repo_root / relative_path).resolve()
+        if _remove_path(candidate):
+            removed_paths.append(str(candidate.relative_to(repo_root)))
+    return removed_paths
 
 
 def _load_reset_seed(repo_root: Path, seed_path: str | Path) -> dict[str, Any]:

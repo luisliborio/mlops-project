@@ -531,15 +531,23 @@ def run_lifecycle_retraining(
     )
 
     state["latest_retraining_summary_path"] = retraining_summary["summary_path"]
+    for entry in state.setdefault("retraining_history", []):
+        entry.pop("accuracy_gain", None)
+
     state.setdefault("retraining_history", []).append(
         {
             "step": int(state.get("step_counter", 0)),
             "accepted": bool(retraining_summary["decision"]["accepted"]),
             "action": retraining_summary["decision"]["action"],
             "reason": retraining_summary["decision"]["reason"],
-            "accuracy_gain": float(retraining_summary["decision"]["accuracy_gain"]),
             "adaptation_accuracy_gain": float(retraining_summary["decision"]["adaptation_accuracy_gain"]),
             "benchmark_accuracy_regression": float(retraining_summary["decision"]["benchmark_accuracy_regression"]),
+            "production_adaptation_accuracy": float(retraining_summary["production_adaptation_metrics"]["accuracy"]),
+            "challenger_adaptation_accuracy": float(retraining_summary["challenger_adaptation_metrics"]["accuracy"]),
+            "production_benchmark_accuracy": float(retraining_summary["production_benchmark_metrics"]["accuracy"]),
+            "challenger_benchmark_accuracy": float(retraining_summary["challenger_benchmark_metrics"]["accuracy"]),
+            "adaptation_test_examples": int(retraining_summary["challenger_adaptation_metrics"]["num_examples"]),
+            "benchmark_test_examples": int(retraining_summary["challenger_benchmark_metrics"]["num_examples"]),
             "version_before": str(retraining_summary["production_model"]["version_before"]),
             "version_after": str(retraining_summary["production_model"]["version_after"]),
             "summary_path": retraining_summary["summary_path"],
@@ -552,7 +560,12 @@ def run_lifecycle_retraining(
                 "step": int(state.get("step_counter", 0)),
                 "model_version": str(retraining_summary["production_model"]["version_after"]),
                 "training_reference_name": retraining_summary["training_reference"]["batch_name_after"],
+                "training_reference_examples_before": int(retraining_summary["training_reference"]["num_examples_before"]),
                 "training_reference_examples": int(retraining_summary["training_reference"]["num_examples_after"]),
+                "recent_train_examples": int(retraining_summary["training_reference"].get("recent_train_examples", 0)),
+                "recent_adaptation_test_examples": int(
+                    retraining_summary["training_reference"].get("recent_adaptation_test_examples", 0)
+                ),
                 "recent_examples_absorbed": int(retraining_summary["training_reference"]["recent_examples_added"]),
                 "source_batch_name": retraining_summary["retraining_source"]["batch_name"],
                 "dvc_tracked": bool(retraining_summary["training_reference"].get("dvc", {}).get("tracked", False)),

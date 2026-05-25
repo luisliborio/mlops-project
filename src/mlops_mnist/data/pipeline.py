@@ -207,6 +207,26 @@ def prepare_baseline_artifacts(
     if benchmark_test_size <= 0:
         raise ValueError("data.baseline.benchmark_test_size must be a positive integer")
 
+    _validate_split_budget(
+        split_name="train",
+        available_examples=len(train_images),
+        requested_batches={
+            "baseline_train": baseline_train_size,
+            "baseline_validation": baseline_validation_size,
+            "clean_batch_a": int(future_batches_config["clean_batch_a_size"]),
+            "clean_batch_b": int(future_batches_config["clean_batch_b_size"]),
+            "noisy_retraining_source_batch": int(future_batches_config["noisy_retraining_batch_size"]),
+            "drift_source_batch": int(future_batches_config["drifted_inference_batch_size"]),
+        },
+    )
+    _validate_split_budget(
+        split_name="test",
+        available_examples=len(test_images),
+        requested_batches={
+            "baseline_test": benchmark_test_size,
+        },
+    )
+
     # Consume the shuffled arrays sequentially so batches never overlap by accident.
     train_cursor = 0
     test_cursor = 0
@@ -246,6 +266,13 @@ def prepare_baseline_artifacts(
         int(future_batches_config["noisy_retraining_batch_size"]),
         "noisy_retraining_source_batch",
     )
+    drift_source_batch, train_cursor = _take_batch(
+        train_images,
+        train_labels,
+        train_cursor,
+        int(future_batches_config["drifted_inference_batch_size"]),
+        "drift_source_batch",
+    )
 
     baseline_test, test_cursor = _take_batch(
         test_images,
@@ -253,13 +280,6 @@ def prepare_baseline_artifacts(
         test_cursor,
         benchmark_test_size,
         "baseline_test",
-    )
-    drift_source_batch, test_cursor = _take_batch(
-        test_images,
-        test_labels,
-        test_cursor,
-        int(future_batches_config["drifted_inference_batch_size"]),
-        "drift_source_batch",
     )
 
     manifest: dict[str, Any] = {
@@ -544,6 +564,25 @@ def _resolve_configured_split_size(
     if resolved_size <= 0:
         raise ValueError(f"{split_name} resolved to zero examples")
     return resolved_size
+
+
+def _validate_split_budget(
+    split_name: str,
+    available_examples: int,
+    requested_batches: dict[str, int],
+) -> None:
+    requested_total = sum(requested_batches.values())
+    if requested_total <= available_examples:
+        return
+
+    requested_text = ", ".join(
+        f"{batch_name}={batch_size}" for batch_name, batch_size in requested_batches.items()
+    )
+    raise ValueError(
+        f"Configured {split_name} split requests exceed the available examples: "
+        f"requested total {requested_total}, available {available_examples}. "
+        f"Requested batches: {requested_text}."
+    )
 
 
 def _write_processed_batch(

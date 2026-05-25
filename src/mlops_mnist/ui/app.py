@@ -12,7 +12,16 @@ import streamlit as st
 from PIL import Image
 from dotenv import dotenv_values
 
-from mlops_mnist.app_reset import reset_application_state
+from mlops_mnist.app_reset import reset_application_state, reset_to_pre_setup_state
+from mlops_mnist.setup_state import (
+    SETUP_MODE_INITIALIZED,
+    evaluate_setup_state,
+    latest_promotion_summary,
+    latest_training_summary,
+    resolve_dvc_command,
+    resolve_python_command,
+    run_setup_command,
+)
 from mlops_mnist.ui.lifecycle import (
     advance_stream_cursor,
     append_event_log,
@@ -41,8 +50,11 @@ REQUEST_TIMEOUT_SECONDS = 30
 FLASH_MESSAGE_KEY = "ui_flash_message"
 ACTIVE_VIEW_KEY = "ui_active_view"
 PENDING_FULL_RESET_KEY = "ui_pending_full_system_reset"
+INITIAL_SETUP_VIEW = "Initial Setup"
+SAMPLE_PREDICTION_VIEW = "Sample Prediction"
+UPLOAD_IMAGE_VIEW = "Upload Image"
 LIFECYCLE_VIEW = "Lifecycle Simulation"
-VIEW_OPTIONS = ["Sample Prediction", "Upload Image", LIFECYCLE_VIEW]
+VIEW_OPTIONS = [INITIAL_SETUP_VIEW, SAMPLE_PREDICTION_VIEW, UPLOAD_IMAGE_VIEW, LIFECYCLE_VIEW]
 DEFAULT_BATCH_OPTIONS = [
     "baseline_test",
     "clean_batch_a",
@@ -56,6 +68,7 @@ def main() -> None:
     st.set_page_config(page_title="MNIST Drift Lab", page_icon="/", layout="wide")
     repo_root = Path(__file__).resolve().parents[3]
     params = load_project_params(repo_root / "params.yaml")
+    setup_state = evaluate_setup_state(repo_root)
     runtime_config = _load_runtime_config(repo_root)
     api_base_url = st.sidebar.text_input(
         "API base URL",
@@ -68,7 +81,9 @@ def main() -> None:
     _render_flash_message()
 
     if ACTIVE_VIEW_KEY not in st.session_state:
-        st.session_state[ACTIVE_VIEW_KEY] = VIEW_OPTIONS[0]
+        st.session_state[ACTIVE_VIEW_KEY] = (
+            INITIAL_SETUP_VIEW if not setup_state["setup_complete"] else SAMPLE_PREDICTION_VIEW
+        )
 
     health = _get_api_health(api_base_url)
     _render_api_status(health)
@@ -81,10 +96,16 @@ def main() -> None:
         label_visibility="collapsed",
     )
 
-    if active_view == "Sample Prediction":
+    if active_view == INITIAL_SETUP_VIEW:
+        _render_initial_setup(repo_root, api_base_url, setup_state, health)
+
+    elif not setup_state["setup_complete"]:
+        _render_setup_required(setup_state)
+
+    elif active_view == SAMPLE_PREDICTION_VIEW:
         _render_sample_prediction(repo_root, api_base_url)
 
-    elif active_view == "Upload Image":
+    elif active_view == UPLOAD_IMAGE_VIEW:
         _render_upload_prediction(api_base_url)
 
     else:
@@ -93,7 +114,7 @@ def main() -> None:
 
 def _render_api_status(health: dict[str, Any] | None) -> None:
     if health is None:
-        st.error("API is not reachable. Start the FastAPI service first.")
+        st.warning("API is not reachable. Start the FastAPI service when you want live predictions.")
         return
 
     col1, col2, col3, col4 = st.columns(4)
@@ -105,6 +126,110 @@ def _render_api_status(health: dict[str, Any] | None) -> None:
         f"Loaded candidate: {health.get('source_candidate_name', 'unknown')} | "
         f"Training run: {health.get('source_training_run_id', 'unknown')}"
     )
+    if health.get("status") != "ok":
+        st.warning("API is running but no production model is loaded yet. Complete Initial Setup or reload after a promotion.")
+
+
+def _render_initial_setup(
+    repo_root: Path,
+    api_base_url: str,
+    setup_state: dict[str, Any],
+    health: dict[str, Any] | None,
+) -> None:
+    st.subheader("Initial Setup")
+    st.caption(
+        "Use this page for the cold project state before `dvc repro`. "
+        "Run data preparation, launch the initial competitor training, promote the winner, and hard reset back to empty when needed."
+    )
+
+    if setup_state["setup_complete"]:
+        st.success("Initial setup is complete. You can inspect the recorded outputs below, rerun the bootstrap flow, or hard reset back to the empty state.")
+    elif setup_state.get("mode") == "empty":
+        st.info("The repository is in the empty pre-setup state. Start with `dvc repro`.")
+    else:
+        st.info("Initial setup is incomplete. Run `dvc repro` first, then train and promote the initial winner.")
+
+    training_summary = setup_state.get("training_summary") or {}
+    promotion_summary = setup_state.get("promotion_summary") or {}
+    production_version = None
+    if health is not None and health.get("status") == "ok":
+        production_version = health.get("model_version")
+    elif promotion_summary:
+        production_version = promotion_summary.get("registered_version")
+
+    status_col1, status_col2, status_col3, status_col4 = st.columns(4)
+    status_col1.metric("DVC data", "ready" if setup_state["data_ready"] else "pending")
+    status_col2.metric("Training", "ready" if setup_state["training_ready"] else "pending")
+    status_col3.metric("Production", f"v{production_version}" if production_version is not None else "pending")
+    status_col4.metric(
+        "API",
+        "ok" if health is not None and health.get("status") == "ok" else ("unavailable" if health is not None else "offline"),
+    )
+
+    if training_summary:
+        st.caption(
+            "Latest training summary: "
+            f"{training_summary['path']} | candidates: {', '.join(training_summary['candidate_names'])} | best: {training_summary.get('best_candidate') or 'unknown'}"
+        )
+    if promotion_summary:
+        st.caption(
+            "Latest promotion summary: "
+            f"{promotion_summary['path']} | version: {promotion_summary.get('registered_version', 'unknown')}"
+        )
+
+    last_action = setup_state.get("last_action")
+    if last_action is not None:
+        if last_action.get("outcome") == "error":
+            st.warning(last_action.get("message", "The last setup action failed."))
+        else:
+            st.caption(f"Last action: {last_action.get('message', '')}")
+
+        command = last_action.get("command") or []
+        if command:
+            st.caption("Last command: " + " ".join(command))
+
+        stdout_tail = last_action.get("stdout_tail") or ""
+        stderr_tail = last_action.get("stderr_tail") or ""
+        if stdout_tail or stderr_tail:
+            with st.expander("Latest setup command output"):
+                if stdout_tail:
+                    st.code(stdout_tail)
+                if stderr_tail:
+                    st.code(stderr_tail)
+
+    if setup_state.get("missing_data_outputs"):
+        missing_preview = ", ".join(setup_state["missing_data_outputs"][:3])
+        suffix = "" if len(setup_state["missing_data_outputs"]) <= 3 else ", ..."
+        st.caption(f"Missing DVC outputs: {missing_preview}{suffix}")
+
+    control_col1, control_col2, control_col3 = st.columns(3)
+    run_dvc_clicked = control_col1.button("Run dvc repro", use_container_width=True)
+    train_clicked = control_col2.button(
+        "Run initial training + promote winner",
+        use_container_width=True,
+        disabled=not setup_state["data_ready"],
+    )
+    hard_reset_clicked = control_col3.button("Hard reset to empty state", use_container_width=True)
+
+    if run_dvc_clicked:
+        _handle_initial_dvc_repro(repo_root)
+
+    if train_clicked:
+        _handle_initial_training_and_promotion(repo_root, api_base_url)
+
+    if hard_reset_clicked:
+        _handle_pre_setup_reset(repo_root, api_base_url)
+
+
+def _render_setup_required(setup_state: dict[str, Any]) -> None:
+    st.subheader("Setup Required")
+    st.info("Complete Initial Setup before using the prediction and lifecycle views.")
+    if setup_state.get("missing_data_outputs"):
+        missing_preview = ", ".join(setup_state["missing_data_outputs"][:5])
+        suffix = "" if len(setup_state["missing_data_outputs"]) <= 5 else ", ..."
+        st.caption(f"Missing outputs: {missing_preview}{suffix}")
+    else:
+        st.caption("The current project state does not yet expose the baseline data, training outputs, and promoted production model required by the other pages.")
 
 
 def _render_sample_prediction(repo_root: Path, api_base_url: str) -> None:
@@ -676,6 +801,95 @@ def _handle_retraining_action(
     st.rerun()
 
 
+def _handle_initial_dvc_repro(repo_root: Path) -> None:
+    with st.spinner("Running dvc repro to materialize the baseline data and scenarios..."):
+        result = run_setup_command(
+            repo_root,
+            command=[*resolve_dvc_command(), "repro"],
+            action_name="run_dvc_repro",
+            success_message="dvc repro completed. Baseline data and scenario batches are ready.",
+            failure_message="dvc repro failed.",
+        )
+
+    if result["ok"]:
+        _load_batch.clear()
+        _set_flash_message("success", "dvc repro completed. Baseline data and source batches are ready.")
+    else:
+        _set_flash_message("warning", "dvc repro failed. Open the latest setup command output on the Initial Setup page for details.")
+    st.rerun()
+
+
+def _handle_initial_training_and_promotion(repo_root: Path, api_base_url: str) -> None:
+    with st.spinner("Training the initial CNN candidates..."):
+        training_result = run_setup_command(
+            repo_root,
+            command=resolve_python_command("scripts/train_model.py"),
+            action_name="run_initial_training",
+            success_message="Initial competitor training finished.",
+            failure_message="Initial competitor training failed.",
+        )
+
+    if not training_result["ok"]:
+        _set_flash_message(
+            "warning",
+            "The initial training run failed. Open the latest setup command output on the Initial Setup page for details.",
+        )
+        st.rerun()
+
+    with st.spinner("Promoting the winning initial model to production..."):
+        promotion_result = run_setup_command(
+            repo_root,
+            command=resolve_python_command("scripts/promote_model.py"),
+            action_name="promote_initial_winner",
+            success_message="The winning initial model was promoted to production.",
+            failure_message="The initial promotion step failed.",
+            mode_on_success=SETUP_MODE_INITIALIZED,
+        )
+
+    if not promotion_result["ok"]:
+        _set_flash_message(
+            "warning",
+            "The initial training run finished, but the promotion step failed. Open the latest setup command output on the Initial Setup page for details.",
+        )
+        st.rerun()
+
+    training_summary = latest_training_summary(repo_root) or {}
+    promotion_summary = latest_promotion_summary(repo_root) or {}
+    best_candidate = training_summary.get("best_candidate") or promotion_summary.get("selected_result", {}).get("candidate_name")
+    promoted_version = promotion_summary.get("registered_version", "unknown")
+    reload_summary = _reload_api_model(api_base_url)
+    if reload_summary is None:
+        _set_flash_message(
+            "warning",
+            f"Initial training finished and promoted {best_candidate or 'the winning model'} to version {promoted_version}, but the API could not reload automatically.",
+        )
+    else:
+        _set_flash_message(
+            "success",
+            f"Initial training finished. Promoted {best_candidate or 'the winning model'} to production version {reload_summary.get('model_version', promoted_version)} and reloaded the API.",
+        )
+    st.rerun()
+
+
+def _handle_pre_setup_reset(repo_root: Path, api_base_url: str) -> None:
+    with st.spinner("Removing generated data, models, and MLflow state..."):
+        reset_to_pre_setup_state(repo_root=repo_root, dvc_path=repo_root / "dvc.yaml")
+
+    _load_batch.clear()
+    reload_summary = _reload_api_model(api_base_url)
+    if reload_summary is None:
+        _set_flash_message(
+            "success",
+            "Hard reset complete. The repository is back to the empty pre-setup state.",
+        )
+    else:
+        _set_flash_message(
+            "success",
+            "Hard reset complete. The repository is back to the empty pre-setup state and the running API was refreshed.",
+        )
+    st.rerun()
+
+
 def _queue_full_system_reset() -> None:
     st.session_state[PENDING_FULL_RESET_KEY] = True
 
@@ -838,10 +1052,50 @@ def _render_placeholder_dashboards(state: dict[str, Any]) -> None:
 
         if state.get("retraining_history"):
             st.markdown("##### Retraining Decisions")
-            st.dataframe(list(reversed(state["retraining_history"][-5:])), use_container_width=True)
+            retraining_history = pd.DataFrame(list(reversed(state["retraining_history"][-5:])))
+            retraining_history = retraining_history.drop(columns=["accuracy_gain"], errors="ignore")
+            retraining_columns = [
+                "step",
+                "accepted",
+                "action",
+                "reason",
+                "adaptation_accuracy_gain",
+                "benchmark_accuracy_regression",
+                "production_adaptation_accuracy",
+                "challenger_adaptation_accuracy",
+                "production_benchmark_accuracy",
+                "challenger_benchmark_accuracy",
+                "adaptation_test_examples",
+                "benchmark_test_examples",
+                "version_before",
+                "version_after",
+                "summary_path",
+            ]
+            retraining_history = retraining_history[
+                [column for column in retraining_columns if column in retraining_history.columns]
+            ]
+            st.dataframe(retraining_history, use_container_width=True)
         if state.get("training_reference_history"):
             st.markdown("##### Training Reference Versions")
-            st.dataframe(list(reversed(state["training_reference_history"][-5:])), use_container_width=True)
+            training_reference_history = pd.DataFrame(list(reversed(state["training_reference_history"][-5:])))
+            training_reference_columns = [
+                "step",
+                "model_version",
+                "training_reference_name",
+                "training_reference_examples_before",
+                "training_reference_examples",
+                "recent_train_examples",
+                "recent_adaptation_test_examples",
+                "recent_examples_absorbed",
+                "source_batch_name",
+                "dvc_tracked",
+                "dvc_file_path",
+                "summary_path",
+            ]
+            training_reference_history = training_reference_history[
+                [column for column in training_reference_columns if column in training_reference_history.columns]
+            ]
+            st.dataframe(training_reference_history, use_container_width=True)
 
 
 def _render_event_log(state: dict[str, Any]) -> None:

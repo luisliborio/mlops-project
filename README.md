@@ -48,6 +48,18 @@ python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
 
+## UI Bootstrap Flow
+
+After the environment is installed, the simplest way to bring the project up is through the Streamlit UI.
+
+1. start the API service
+2. start the UI
+3. open the `Initial Setup` page
+4. run `dvc repro`
+5. run the initial training flow, which automatically promotes the winner
+
+The `Initial Setup` page stays available after bootstrap and also exposes a hard reset back to the empty pre-setup state when you want to rerun the project from scratch after changing `params.yaml`.
+
 ## Next Steps
 
 Day 2 work will implement the first executable slice of the pipeline:

@@ -21,7 +21,7 @@ from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, Summary, generate_latest
 
-from mlops_mnist.app_reset import _reset_mlflow_runtime_state, ensure_initial_production_alias
+from mlops_mnist.app_reset import _reset_mlflow_runtime_state
 from mlops_mnist.utils.mlflow_compat import (
     prepare_local_tracking_uri,
     resolve_runtime_model_artifact_path,
@@ -114,23 +114,10 @@ class InferenceService:
         try:
             version_info = client.get_model_version_by_alias(self.registered_model_name, self.model_alias)
         except MlflowException as exc:
-            recovered = ensure_initial_production_alias(
-                repo_root=self.repo_root,
-                params_path=self.repo_root / "params.yaml",
-            )
-            if recovered is None:
-                raise exc
-
-            self.tracking_uri = prepare_local_tracking_uri(
-                self.repo_root,
-                _resolve_tracking_uri(
-                    self.repo_root,
-                    self.runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
-                ),
-            )
-            mlflow.set_tracking_uri(self.tracking_uri)
-            client = MlflowClient()
-            version_info = client.get_model_version_by_alias(self.registered_model_name, self.model_alias)
+            if _is_expected_missing_model_error(exc):
+                self._mark_model_unavailable()
+                return
+            raise
 
         self.model_version = str(version_info.version)
         self.source_training_run_id = version_info.tags.get("source_training_run_id")
@@ -154,6 +141,14 @@ class InferenceService:
             version=self.model_version or "unknown",
             candidate_name=self.source_candidate_name or "unknown",
         ).set(1)
+
+    def _mark_model_unavailable(self) -> None:
+        self.model = None
+        self.model_version = None
+        self.model_loaded_at = None
+        self.source_training_run_id = None
+        self.source_candidate_name = None
+        self._model_info_labels = None
 
     def predict(self, request_payload: PredictRequest, client_host: str | None) -> dict[str, Any]:
         if self.model is None:
@@ -302,6 +297,8 @@ def predict(payload: PredictRequest, request: Request) -> dict[str, Any]:
         return service.predict(payload, client_host=request.client.host if request.client else None)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.post("/reload-model")
@@ -383,6 +380,14 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload) + "\n")
+
+
+def _is_expected_missing_model_error(exc: Exception) -> bool:
+    if not isinstance(exc, MlflowException):
+        return False
+
+    message = str(exc).lower()
+    return "registered model" in message and "not found" in message
 
 
 def _utc_now() -> str:
