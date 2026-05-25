@@ -21,7 +21,7 @@ from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, Summary, generate_latest
 
-from mlops_mnist.app_reset import ensure_initial_production_alias
+from mlops_mnist.app_reset import _reset_mlflow_runtime_state, ensure_initial_production_alias
 from mlops_mnist.utils.mlflow_compat import (
     prepare_local_tracking_uri,
     resolve_runtime_model_artifact_path,
@@ -99,6 +99,14 @@ class InferenceService:
 
     def load_model(self) -> None:
         # Load the current production alias from the local MLflow registry.
+        _reset_mlflow_runtime_state()
+        self.tracking_uri = prepare_local_tracking_uri(
+            self.repo_root,
+            _resolve_tracking_uri(
+                self.repo_root,
+                self.runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
+            ),
+        )
         mlflow.set_tracking_uri(self.tracking_uri)
         client = MlflowClient()
         if self._model_info_labels is not None:
@@ -113,10 +121,13 @@ class InferenceService:
             if recovered is None:
                 raise exc
 
-            self.tracking_uri = prepare_local_tracking_uri(self.repo_root, _resolve_tracking_uri(
+            self.tracking_uri = prepare_local_tracking_uri(
                 self.repo_root,
-                self.runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
-            ))
+                _resolve_tracking_uri(
+                    self.repo_root,
+                    self.runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
+                ),
+            )
             mlflow.set_tracking_uri(self.tracking_uri)
             client = MlflowClient()
             version_info = client.get_model_version_by_alias(self.registered_model_name, self.model_alias)

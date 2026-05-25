@@ -27,7 +27,7 @@ data:
       - contrast_shift
     severity: medium
   noisy_labels:
-    flip_fraction: 0.15
+    flip_fraction: 0.10
 
 model:
   family: keras_cnn

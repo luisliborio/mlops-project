@@ -268,6 +268,24 @@ def label_pending_batches(state: dict[str, Any]) -> int:
     return int(labeled_now)
 
 
+def clear_labeled_batches(state: dict[str, Any]) -> int:
+    labeled_records = [
+        record for record in state.get("recorded_batches", []) if record.get("labeled", False)
+    ]
+    cleared_samples = int(sum(len(record.get("indices", [])) for record in labeled_records))
+    if cleared_samples <= 0:
+        return 0
+
+    state["recorded_batches"] = [
+        record for record in state.get("recorded_batches", []) if not record.get("labeled", False)
+    ]
+    state["supervised_history"] = []
+    state["current_alerts"] = []
+    state["latest_monitoring_summary_path"] = None
+    state["latest_retraining_summary_path"] = None
+    return cleared_samples
+
+
 def latest_recorded_distribution(state: dict[str, Any]) -> list[int]:
     records = state.get("recorded_batches", [])
     if not records:
@@ -454,7 +472,7 @@ def run_lifecycle_monitoring(
         params_path=_resolve_path(repo_root, params_path),
         batch_path=materialized_batch["batch_path"],
         baseline_snapshot_path=baseline_reference["summary_path"],
-        use_clean_labels=bool(materialized_batch["has_clean_labels"]),
+        use_clean_labels=False,
         output_dir="artifacts/ui_lifecycle/monitoring",
     )
 

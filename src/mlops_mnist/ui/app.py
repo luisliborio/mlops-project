@@ -17,6 +17,7 @@ from mlops_mnist.ui.lifecycle import (
     advance_stream_cursor,
     append_event_log,
     append_recorded_batch,
+    clear_labeled_batches,
     compute_cursor_slice,
     compute_histogram_js_divergence,
     count_pending_labeled_samples,
@@ -241,7 +242,7 @@ def _render_lifecycle_simulation(repo_root: Path, api_base_url: str, params: dic
     pending_labeled = count_pending_labeled_samples(state)
     ready_labeled = count_ready_labeled_samples(state)
 
-    control_col1, control_col2, control_col3, control_col4 = st.columns(4)
+    control_col1, control_col2, control_col3, control_col4, control_col5 = st.columns(5)
     run_next_clicked = control_col1.button(
         "Run Next Batch",
         use_container_width=True,
@@ -252,12 +253,17 @@ def _render_lifecycle_simulation(repo_root: Path, api_base_url: str, params: dic
         use_container_width=True,
         disabled=pending_labeled <= 0,
     )
-    retrain_clicked = control_col3.button(
+    clear_labeled_clicked = control_col3.button(
+        "Clean Labeled Data",
+        use_container_width=True,
+        disabled=ready_labeled <= 0,
+    )
+    retrain_clicked = control_col4.button(
         "Retrain",
         use_container_width=True,
         disabled=ready_labeled < min_recent_samples,
     )
-    control_col4.button(
+    control_col5.button(
         "Full System Reset",
         use_container_width=True,
         on_click=_queue_full_system_reset,
@@ -277,6 +283,9 @@ def _render_lifecycle_simulation(repo_root: Path, api_base_url: str, params: dic
 
     if label_clicked:
         _handle_label_action(repo_root=repo_root, state=state, params=params)
+
+    if clear_labeled_clicked:
+        _handle_clear_labeled_action(repo_root=repo_root, state=state)
 
     if retrain_clicked:
         _handle_retraining_action(
@@ -562,6 +571,22 @@ def _handle_label_action(repo_root: Path, state: dict[str, Any], params: dict[st
         append_event_log(state, level="info", message=message + " No supervised alerts are active.")
         _set_flash_message("success", message)
 
+    save_lifecycle_state(repo_root, state)
+    st.rerun()
+
+
+def _handle_clear_labeled_action(repo_root: Path, state: dict[str, Any]) -> None:
+    cleared_samples = clear_labeled_batches(state)
+    if cleared_samples <= 0:
+        st.info("There are no labeled samples to clean from the lifecycle buffer.")
+        return
+
+    message = (
+        f"Removed {cleared_samples} labeled samples from the lifecycle buffer. "
+        "Supervised monitoring was cleared."
+    )
+    append_event_log(state, level="warning", message=message)
+    _set_flash_message("warning", message)
     save_lifecycle_state(repo_root, state)
     st.rerun()
 
