@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
@@ -9,8 +10,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from dotenv import dotenv_values
 
 from mlops_mnist.monitoring.prometheus_exporter import (
@@ -53,7 +53,6 @@ from mlops_mnist.utils.mlflow_compat import resolve_repo_bound_path
 
 
 REQUEST_TIMEOUT_SECONDS = 30
-MONITORING_STATUS_TIMEOUT_SECONDS = 1.5
 FLASH_MESSAGE_KEY = "ui_flash_message"
 ACTIVE_VIEW_KEY = "ui_active_view"
 PENDING_FULL_RESET_KEY = "ui_pending_full_system_reset"
@@ -61,8 +60,6 @@ INITIAL_SETUP_VIEW = "Initial Setup"
 SAMPLE_PREDICTION_VIEW = "Sample Prediction"
 UPLOAD_IMAGE_VIEW = "Upload Image"
 LIFECYCLE_VIEW = "Lifecycle Simulation"
-UNSUPERVISED_DASHBOARD_UID = "mnist-lifecycle-unsupervised"
-SUPERVISED_DASHBOARD_UID = "mnist-lifecycle-supervised"
 VIEW_OPTIONS = [INITIAL_SETUP_VIEW, SAMPLE_PREDICTION_VIEW, UPLOAD_IMAGE_VIEW, LIFECYCLE_VIEW]
 DEFAULT_BATCH_OPTIONS = [
     "baseline_test",
@@ -305,9 +302,12 @@ def _render_lifecycle_simulation(
         "Each click is one simulated time step. Record off means preview only. "
         "Record on means incoming data is stored for monitoring, labeling, and retraining."
     )
+    _render_lifecycle_ui_styles()
 
     _consume_pending_full_system_reset(repo_root=repo_root, api_base_url=api_base_url)
     state = load_lifecycle_state(repo_root)
+    if _refresh_latest_preview_labels(repo_root, state):
+        save_lifecycle_state(repo_root, state)
     default_batch = (
         state.get("active_batch_name")
         if state.get("active_batch_name") in DEFAULT_BATCH_OPTIONS
@@ -437,7 +437,8 @@ def _render_lifecycle_simulation(
 
     _render_latest_preview(state.get("latest_preview"))
     _render_alert_panel(state, params)
-    _render_placeholder_dashboards(state, monitoring_status)
+    _render_monitoring_links(monitoring_status)
+    _render_lifecycle_history_tables(state)
     _render_event_log(state)
 
 
@@ -569,17 +570,19 @@ def _render_lifecycle_status_cards(
     benchmark_accuracy = baseline_reference.get("accuracy")
 
     col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
-    col1.metric("Active stream", batch_name)
-    col2.metric("Cursor", f"{state.get('cursor', 0)} / {total_examples}")
-    col3.metric("Next slice", next_range)
-    col4.metric("Record", "on" if state.get("record_mode") else "off")
-    col5.metric("Unlabeled", str(pending_labeled))
-    col6.metric("Labeled / retrain", f"{ready_labeled} / {min_recent_samples}")
-    col7.metric(
+    _render_compact_status_card(col1, "Active stream", batch_name)
+    _render_compact_status_card(col2, "Cursor", f"{state.get('cursor', 0)} / {total_examples}")
+    _render_compact_status_card(col3, "Next slice", next_range)
+    _render_compact_status_card(col4, "Record", "on" if state.get("record_mode") else "off")
+    _render_compact_status_card(col5, "Unlabeled", str(pending_labeled))
+    _render_compact_status_card(col6, "Labeled / retrain", f"{ready_labeled} / {min_recent_samples}")
+    _render_compact_status_card(
+        col7,
         "Benchmark acc",
         f"{float(benchmark_accuracy):.4f}" if benchmark_accuracy is not None else "-",
     )
-    col8.metric(
+    _render_compact_status_card(
+        col8,
         "Train ref size",
         str(training_reference_examples) if training_reference_examples is not None else "-",
     )
@@ -630,7 +633,9 @@ def _handle_run_next_batch(
         return
 
     preview_payload = _build_preview_payload(
+        batch_name=batch_name,
         slice_payload=slice_payload,
+        images=current_images,
         labels=labels,
         prediction=prediction,
         latency_ms=latency_ms,
@@ -968,7 +973,9 @@ def _consume_pending_full_system_reset(repo_root: Path, api_base_url: str) -> No
 
 
 def _build_preview_payload(
+    batch_name: str,
     slice_payload: dict[str, Any],
+    images: np.ndarray,
     labels: np.ndarray,
     prediction: dict[str, Any],
     latency_ms: float,
@@ -990,6 +997,7 @@ def _build_preview_payload(
         results.append(row)
 
     return {
+        "batch_name": batch_name,
         "step": int(slice_payload["step"]),
         "start_index": int(slice_payload["start_index"]),
         "end_index": int(slice_payload["end_index"]),
@@ -999,8 +1007,52 @@ def _build_preview_payload(
         "accuracy": float(accuracy),
         "latency_ms": float(latency_ms),
         "model_version": prediction["model_version"],
+        "preview_images": [
+            np.squeeze(image).astype(np.float32).clip(0.0, 1.0).tolist()
+            for image in images[:10]
+        ],
         "results": results,
     }
+
+
+def _refresh_latest_preview_labels(repo_root: Path, state: dict[str, Any]) -> bool:
+    preview_payload = state.get("latest_preview")
+    if not preview_payload or not preview_payload.get("labels_hidden"):
+        return False
+
+    preview_step = int(preview_payload.get("step", -1))
+    preview_batch_name = str(preview_payload.get("batch_name") or "")
+    if not preview_batch_name:
+        return False
+
+    matching_record = next(
+        (
+            record
+            for record in reversed(state.get("recorded_batches", []))
+            if int(record.get("step", -1)) == preview_step
+            and str(record.get("batch_name") or "") == preview_batch_name
+            and bool(record.get("labeled", False))
+        ),
+        None,
+    )
+    if matching_record is None:
+        return False
+
+    labels = _load_batch(repo_root, preview_batch_name)["labels"]
+    results = list(preview_payload.get("results") or [])
+    if not results:
+        return False
+
+    correct_predictions = 0
+    for row in results:
+        index = int(row["index"])
+        true_label = int(labels[index])
+        row["true_label"] = true_label
+        correct_predictions += int(int(row["predicted_label"]) == true_label)
+
+    preview_payload["labels_hidden"] = False
+    preview_payload["accuracy"] = float(correct_predictions / len(results))
+    return True
 
 
 def _render_latest_preview(preview_payload: dict[str, Any] | None) -> None:
@@ -1023,7 +1075,96 @@ def _render_latest_preview(preview_payload: dict[str, Any] | None) -> None:
     else:
         st.success(f"Preview batch accuracy: {preview_payload['accuracy']:.4f}")
 
-    st.dataframe(preview_payload["results"], use_container_width=True)
+    preview_results = pd.DataFrame(preview_payload["results"])
+    table_width = 380 if preview_payload["labels_hidden"] else 500
+    table_height = min(320, 42 * (len(preview_results) + 1))
+    table_col, grid_col = st.columns([1.08, 0.92], gap="small")
+    with table_col:
+        st.dataframe(
+            preview_results,
+            hide_index=True,
+            use_container_width=False,
+            width=table_width,
+            height=table_height,
+            column_config={
+                "index": st.column_config.NumberColumn("Index", width="small", format="%d"),
+                "predicted_label": st.column_config.NumberColumn("Predicted label", width="small", format="%d"),
+                "confidence": st.column_config.NumberColumn("Confidence", width="small", format="%.4f"),
+                "true_label": st.column_config.NumberColumn("True label", width="small", format="%d"),
+            },
+        )
+    with grid_col:
+        preview_grid = _build_latest_preview_grid_image(preview_payload)
+        if preview_grid is not None:
+            st.caption("First 10 images from the last inferred batch")
+            st.image(preview_grid, use_container_width=True)
+
+
+def _build_latest_preview_grid_image(preview_payload: dict[str, Any]) -> Image.Image | None:
+    preview_images = list(preview_payload.get("preview_images") or [])[:10]
+    preview_results = list(preview_payload.get("results") or [])[:10]
+    if not preview_images or not preview_results:
+        return None
+
+    columns = 5
+    rows = 2
+    cell_size = 92
+    gap = 8
+    outer_padding = 8
+    canvas_width = outer_padding * 2 + columns * cell_size + (columns - 1) * gap
+    canvas_height = outer_padding * 2 + rows * cell_size + (rows - 1) * gap
+    canvas = Image.new("RGB", (canvas_width, canvas_height), (245, 247, 250))
+    draw = ImageDraw.Draw(canvas)
+    resample_nearest = Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST
+    badge_font = _load_latest_preview_badge_font(size=13)
+
+    for slot in range(len(preview_images)):
+        row_index, column_index = divmod(slot, columns)
+        origin_x = outer_padding + column_index * (cell_size + gap)
+        origin_y = outer_padding + row_index * (cell_size + gap)
+        draw.rounded_rectangle(
+            [origin_x, origin_y, origin_x + cell_size, origin_y + cell_size],
+            radius=8,
+            fill=(255, 255, 255),
+            outline=(209, 213, 219),
+        )
+        if slot >= len(preview_images) or slot >= len(preview_results):
+            continue
+
+        image_array = np.asarray(preview_images[slot], dtype=np.float32)
+        if image_array.ndim == 3 and image_array.shape[-1] == 1:
+            image_array = image_array[..., 0]
+        image_array = np.clip(image_array, 0.0, 1.0)
+        cell_image = Image.fromarray(np.uint8(image_array * 255), mode="L")
+        cell_image = cell_image.resize((cell_size - 12, cell_size - 12), resample=resample_nearest).convert("RGB")
+        image_x = origin_x + (cell_size - cell_image.width) // 2
+        image_y = origin_y + (cell_size - cell_image.height) // 2
+        canvas.paste(cell_image, (image_x, image_y))
+
+        badge_text, badge_color = _latest_preview_badge(preview_results[slot])
+        text_x = origin_x + 7
+        text_y = origin_y + 4
+        draw.text((text_x, text_y), badge_text, fill=badge_color, font=badge_font)
+
+    return canvas
+
+
+def _latest_preview_badge(preview_row: dict[str, Any]) -> tuple[str, tuple[int, int, int]]:
+    true_label = preview_row.get("true_label")
+    predicted_label = int(preview_row.get("predicted_label", -1))
+    confidence = float(preview_row.get("confidence", 0.0))
+    if true_label is None:
+        return f"? | {predicted_label} - {confidence:.2f}", (107, 114, 128)
+    if predicted_label == int(true_label):
+        return f"{true_label} | {predicted_label} - {confidence:.2f}", (22, 163, 74)
+    return f"{true_label} | {predicted_label} - {confidence:.2f}", (220, 38, 38)
+
+
+def _load_latest_preview_badge_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    try:
+        return ImageFont.truetype("DejaVuSans-Bold.ttf", size=size)
+    except OSError:
+        return ImageFont.load_default()
 
 
 def _render_alert_panel(state: dict[str, Any], params: dict[str, Any]) -> None:
@@ -1045,117 +1186,14 @@ def _render_alert_panel(state: dict[str, Any], params: dict[str, Any]) -> None:
         st.caption("No active threshold violations in the current lifecycle state.")
 
 
-def _render_placeholder_dashboards(
-    state: dict[str, Any],
-    monitoring_status: dict[str, Any] | None = None,
-) -> None:
+def _render_monitoring_links(monitoring_status: dict[str, Any] | None = None) -> None:
     monitoring_status = monitoring_status or {}
     grafana_url = str(monitoring_status.get("grafana_url", "http://127.0.0.1:3000"))
     prometheus_url = str(monitoring_status.get("prometheus_url", "http://127.0.0.1:9090"))
-    exporter_port = int(monitoring_status.get("exporter_port", 9108))
-    exporter_ready = bool(monitoring_status.get("exporter_ready", False))
-    grafana_available = _is_service_available(f"{grafana_url}/api/health")
-
-    st.markdown("#### Grafana Dashboards")
-    st.caption(
-        "The old Prometheus and Grafana split was only a UI mock. "
-        "Both views below are Grafana dashboards backed by Prometheus."
-    )
-
-    status_col1, status_col2, status_col3 = st.columns(3)
-    status_col1.metric(
-        "Lifecycle exporter",
-        f"up :{exporter_port}" if exporter_ready else f"unavailable :{exporter_port}",
-    )
-    status_col2.link_button("Open Prometheus", prometheus_url, use_container_width=True)
-    status_col3.link_button("Open Grafana", grafana_url, use_container_width=True)
-
-    if not exporter_ready:
-        st.warning(
-            f"The lifecycle Prometheus exporter could not bind to port {exporter_port}. "
-            "Check whether another process is already using that port."
-        )
-
-    if grafana_available:
-        dashboard_col1, dashboard_col2 = st.columns(2)
-        with dashboard_col1:
-            st.markdown("##### Unsupervised Metrics")
-            components.iframe(
-                _build_grafana_dashboard_url(
-                    grafana_url,
-                    UNSUPERVISED_DASHBOARD_UID,
-                    "mnist-lifecycle-unsupervised",
-                ),
-                height=640,
-                scrolling=True,
-            )
-        with dashboard_col2:
-            st.markdown("##### Supervised Metrics")
-            components.iframe(
-                _build_grafana_dashboard_url(
-                    grafana_url,
-                    SUPERVISED_DASHBOARD_UID,
-                    "mnist-lifecycle-supervised",
-                ),
-                height=640,
-                scrolling=True,
-            )
-    else:
-        st.info(
-            "Grafana is not reachable yet. Start the stack with "
-            "`docker compose -f monitoring/docker-compose.yml up -d` and refresh this page."
-        )
-        _render_local_monitoring_snapshot(state)
-
-    _render_lifecycle_history_tables(state)
-
-
-def _render_local_monitoring_snapshot(state: dict[str, Any]) -> None:
-    fallback_col1, fallback_col2 = st.columns(2)
-    with fallback_col1:
-        st.markdown("##### Local Unsupervised Snapshot")
-        if state.get("unsupervised_history"):
-            unsupervised = pd.DataFrame(state["unsupervised_history"]).set_index("step")
-            if len(unsupervised) > 1:
-                st.line_chart(unsupervised[["recorded_examples"]], height=180)
-                st.line_chart(unsupervised[["mean_confidence", "confidence_drop"]], height=180)
-                st.line_chart(unsupervised[["histogram_js_divergence"]], height=180)
-                st.line_chart(unsupervised[["latency_ms"]], height=180)
-            else:
-                summary_row = unsupervised.iloc[-1]
-                metric_cols = st.columns(4)
-                metric_cols[0].metric("Recorded examples", int(summary_row["recorded_examples"]))
-                metric_cols[1].metric("Mean confidence", f"{float(summary_row['mean_confidence']):.4f}")
-                metric_cols[2].metric("Confidence drop", f"{float(summary_row['confidence_drop']):.4f}")
-                metric_cols[3].metric("Latency (ms)", f"{float(summary_row['latency_ms']):.1f}")
-            distribution = pd.DataFrame(
-                {"latest_recorded_batch": latest_recorded_distribution(state)},
-                index=[str(index) for index in range(10)],
-            )
-            st.bar_chart(distribution)
-        else:
-            st.info("Turn Record on and run batches to populate the unsupervised lifecycle charts.")
-
-    with fallback_col2:
-        st.markdown("##### Local Supervised Snapshot")
-        if state.get("supervised_history"):
-            supervised = pd.DataFrame(state["supervised_history"]).set_index("step")
-            if len(supervised) > 1:
-                st.line_chart(supervised[["accuracy", "macro_f1"]], height=180)
-                st.line_chart(supervised[["accuracy_drop", "confidence_drop"]], height=180)
-                st.line_chart(supervised[["histogram_js_divergence"]], height=180)
-            else:
-                summary_row = supervised.iloc[-1]
-                metric_cols = st.columns(4)
-                metric_cols[0].metric("Rolling accuracy", f"{float(summary_row['accuracy']):.4f}")
-                metric_cols[1].metric("Macro F1", f"{float(summary_row['macro_f1']):.4f}")
-                metric_cols[2].metric("Accuracy drop", f"{float(summary_row['accuracy_drop']):.4f}")
-                metric_cols[3].metric(
-                    "Histogram JS",
-                    f"{float(summary_row['histogram_js_divergence']):.4f}",
-                )
-        else:
-            st.info("Click Label Data after recording batches to reveal supervised lifecycle metrics.")
+    st.markdown("#### Monitoring")
+    button_col1, button_col2 = st.columns(2)
+    button_col1.link_button("Open Prometheus", prometheus_url, use_container_width=True)
+    button_col2.link_button("Open Grafana", grafana_url, use_container_width=True)
 
 
 def _render_lifecycle_history_tables(state: dict[str, Any]) -> None:
@@ -1207,21 +1245,48 @@ def _render_lifecycle_history_tables(state: dict[str, Any]) -> None:
         st.dataframe(training_reference_history, use_container_width=True)
 
 
-def _build_grafana_dashboard_url(base_url: str, uid: str, slug: str) -> str:
-    normalized_base_url = base_url.rstrip("/")
-    return (
-        f"{normalized_base_url}/d/{uid}/{slug}"
-        "?orgId=1&from=now-15m&to=now&theme=light&kiosk"
+def _render_lifecycle_ui_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .lifecycle-status-card {
+            border: 1px solid rgba(49, 51, 63, 0.18);
+            border-radius: 0.6rem;
+            padding: 0.4rem 0.55rem;
+            min-height: 4rem;
+            background: rgba(255, 255, 255, 0.8);
+        }
+        .lifecycle-status-label {
+            color: rgb(107, 114, 128);
+            font-size: 0.68rem;
+            line-height: 1.1;
+            margin-bottom: 0.2rem;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+        .lifecycle-status-value {
+            color: rgb(17, 24, 39);
+            font-size: 0.95rem;
+            line-height: 1.2;
+            font-weight: 600;
+            word-break: break-word;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
 
-def _is_service_available(url: str) -> bool:
-    try:
-        response = requests.get(url, timeout=MONITORING_STATUS_TIMEOUT_SECONDS)
-        response.raise_for_status()
-        return True
-    except requests.RequestException:
-        return False
+def _render_compact_status_card(container: Any, label: str, value: str) -> None:
+    container.markdown(
+        (
+            '<div class="lifecycle-status-card">'
+            f'<div class="lifecycle-status-label">{escape(label)}</div>'
+            f'<div class="lifecycle-status-value">{escape(value)}</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def _render_event_log(state: dict[str, Any]) -> None:
