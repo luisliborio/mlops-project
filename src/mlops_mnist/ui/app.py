@@ -9,9 +9,15 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 from dotenv import dotenv_values
 
+from mlops_mnist.monitoring.prometheus_exporter import (
+    DEFAULT_LIFECYCLE_METRICS_PORT,
+    ensure_lifecycle_metrics_server,
+    sync_lifecycle_state_metrics,
+)
 from mlops_mnist.app_reset import reset_application_state, reset_to_pre_setup_state
 from mlops_mnist.setup_state import (
     SETUP_MODE_INITIALIZED,
@@ -47,6 +53,7 @@ from mlops_mnist.utils.mlflow_compat import resolve_repo_bound_path
 
 
 REQUEST_TIMEOUT_SECONDS = 30
+MONITORING_STATUS_TIMEOUT_SECONDS = 1.5
 FLASH_MESSAGE_KEY = "ui_flash_message"
 ACTIVE_VIEW_KEY = "ui_active_view"
 PENDING_FULL_RESET_KEY = "ui_pending_full_system_reset"
@@ -54,6 +61,8 @@ INITIAL_SETUP_VIEW = "Initial Setup"
 SAMPLE_PREDICTION_VIEW = "Sample Prediction"
 UPLOAD_IMAGE_VIEW = "Upload Image"
 LIFECYCLE_VIEW = "Lifecycle Simulation"
+UNSUPERVISED_DASHBOARD_UID = "mnist-lifecycle-unsupervised"
+SUPERVISED_DASHBOARD_UID = "mnist-lifecycle-supervised"
 VIEW_OPTIONS = [INITIAL_SETUP_VIEW, SAMPLE_PREDICTION_VIEW, UPLOAD_IMAGE_VIEW, LIFECYCLE_VIEW]
 DEFAULT_BATCH_OPTIONS = [
     "baseline_test",
@@ -70,6 +79,7 @@ def main() -> None:
     params = load_project_params(repo_root / "params.yaml")
     setup_state = evaluate_setup_state(repo_root)
     runtime_config = _load_runtime_config(repo_root)
+    monitoring_status = _initialize_lifecycle_monitoring(repo_root, runtime_config)
     api_base_url = st.sidebar.text_input(
         "API base URL",
         value=_default_api_base_url(runtime_config),
@@ -109,7 +119,7 @@ def main() -> None:
         _render_upload_prediction(api_base_url)
 
     else:
-        _render_lifecycle_simulation(repo_root, api_base_url, params)
+        _render_lifecycle_simulation(repo_root, api_base_url, params, monitoring_status)
 
 
 def _render_api_status(health: dict[str, Any] | None) -> None:
@@ -284,7 +294,12 @@ def _render_upload_prediction(api_base_url: str) -> None:
                 st.write(f"Model version: `{prediction['model_version']}`")
 
 
-def _render_lifecycle_simulation(repo_root: Path, api_base_url: str, params: dict[str, Any]) -> None:
+def _render_lifecycle_simulation(
+    repo_root: Path,
+    api_base_url: str,
+    params: dict[str, Any],
+    monitoring_status: dict[str, Any] | None = None,
+) -> None:
     st.subheader("Lifecycle Simulation")
     st.caption(
         "Each click is one simulated time step. Record off means preview only. "
@@ -422,7 +437,7 @@ def _render_lifecycle_simulation(repo_root: Path, api_base_url: str, params: dic
 
     _render_latest_preview(state.get("latest_preview"))
     _render_alert_panel(state, params)
-    _render_placeholder_dashboards(state)
+    _render_placeholder_dashboards(state, monitoring_status)
     _render_event_log(state)
 
 
@@ -442,6 +457,36 @@ def _load_runtime_config(repo_root: Path) -> dict[str, str]:
 def _default_api_base_url(runtime_config: dict[str, str]) -> str:
     api_port = runtime_config.get("API_PORT", "8000")
     return f"http://127.0.0.1:{api_port}"
+
+
+def _initialize_lifecycle_monitoring(repo_root: Path, runtime_config: dict[str, str]) -> dict[str, Any]:
+    lifecycle_state = load_lifecycle_state(repo_root)
+    exporter_port = _resolve_runtime_port(
+        runtime_config,
+        "LIFECYCLE_METRICS_PORT",
+        DEFAULT_LIFECYCLE_METRICS_PORT,
+    )
+    prometheus_port = _resolve_runtime_port(runtime_config, "PROMETHEUS_PORT", 9090)
+    grafana_port = _resolve_runtime_port(runtime_config, "GRAFANA_PORT", 3000)
+
+    exporter_ready = ensure_lifecycle_metrics_server(exporter_port)
+    sync_lifecycle_state_metrics(lifecycle_state)
+    return {
+        "exporter_ready": exporter_ready,
+        "exporter_port": exporter_port,
+        "prometheus_url": f"http://127.0.0.1:{prometheus_port}",
+        "grafana_url": f"http://127.0.0.1:{grafana_port}",
+    }
+
+
+def _resolve_runtime_port(runtime_config: dict[str, str], key: str, default: int) -> int:
+    raw_value = runtime_config.get(key)
+    if raw_value is None:
+        return int(default)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return int(default)
 
 
 @st.cache_data(show_spinner=False)
@@ -1000,13 +1045,75 @@ def _render_alert_panel(state: dict[str, Any], params: dict[str, Any]) -> None:
         st.caption("No active threshold violations in the current lifecycle state.")
 
 
-def _render_placeholder_dashboards(state: dict[str, Any]) -> None:
-    st.markdown("#### Monitoring Placeholders")
-    st.caption("Simulated time is click-driven here. These charts stand in for Prometheus and Grafana until those services are available.")
+def _render_placeholder_dashboards(
+    state: dict[str, Any],
+    monitoring_status: dict[str, Any] | None = None,
+) -> None:
+    monitoring_status = monitoring_status or {}
+    grafana_url = str(monitoring_status.get("grafana_url", "http://127.0.0.1:3000"))
+    prometheus_url = str(monitoring_status.get("prometheus_url", "http://127.0.0.1:9090"))
+    exporter_port = int(monitoring_status.get("exporter_port", 9108))
+    exporter_ready = bool(monitoring_status.get("exporter_ready", False))
+    grafana_available = _is_service_available(f"{grafana_url}/api/health")
 
-    prom_col, graf_col = st.columns(2)
-    with prom_col:
-        st.markdown("##### Prometheus Placeholder")
+    st.markdown("#### Grafana Dashboards")
+    st.caption(
+        "The old Prometheus and Grafana split was only a UI mock. "
+        "Both views below are Grafana dashboards backed by Prometheus."
+    )
+
+    status_col1, status_col2, status_col3 = st.columns(3)
+    status_col1.metric(
+        "Lifecycle exporter",
+        f"up :{exporter_port}" if exporter_ready else f"unavailable :{exporter_port}",
+    )
+    status_col2.link_button("Open Prometheus", prometheus_url, use_container_width=True)
+    status_col3.link_button("Open Grafana", grafana_url, use_container_width=True)
+
+    if not exporter_ready:
+        st.warning(
+            f"The lifecycle Prometheus exporter could not bind to port {exporter_port}. "
+            "Check whether another process is already using that port."
+        )
+
+    if grafana_available:
+        dashboard_col1, dashboard_col2 = st.columns(2)
+        with dashboard_col1:
+            st.markdown("##### Unsupervised Metrics")
+            components.iframe(
+                _build_grafana_dashboard_url(
+                    grafana_url,
+                    UNSUPERVISED_DASHBOARD_UID,
+                    "mnist-lifecycle-unsupervised",
+                ),
+                height=640,
+                scrolling=True,
+            )
+        with dashboard_col2:
+            st.markdown("##### Supervised Metrics")
+            components.iframe(
+                _build_grafana_dashboard_url(
+                    grafana_url,
+                    SUPERVISED_DASHBOARD_UID,
+                    "mnist-lifecycle-supervised",
+                ),
+                height=640,
+                scrolling=True,
+            )
+    else:
+        st.info(
+            "Grafana is not reachable yet. Start the stack with "
+            "`docker compose -f monitoring/docker-compose.yml up -d` and refresh this page."
+        )
+        _render_local_monitoring_snapshot(state)
+
+    _render_lifecycle_history_tables(state)
+
+
+def _render_local_monitoring_snapshot(state: dict[str, Any]) -> None:
+    fallback_col1, fallback_col2 = st.columns(2)
+    with fallback_col1:
+        st.markdown("##### Local Unsupervised Snapshot")
         if state.get("unsupervised_history"):
             unsupervised = pd.DataFrame(state["unsupervised_history"]).set_index("step")
             if len(unsupervised) > 1:
@@ -1029,8 +1136,8 @@ def _render_placeholder_dashboards(state: dict[str, Any]) -> None:
         else:
             st.info("Turn Record on and run batches to populate the unsupervised lifecycle charts.")
 
-    with graf_col:
-        st.markdown("##### Grafana Placeholder")
+    with fallback_col2:
+        st.markdown("##### Local Supervised Snapshot")
         if state.get("supervised_history"):
             supervised = pd.DataFrame(state["supervised_history"]).set_index("step")
             if len(supervised) > 1:
@@ -1050,52 +1157,71 @@ def _render_placeholder_dashboards(state: dict[str, Any]) -> None:
         else:
             st.info("Click Label Data after recording batches to reveal supervised lifecycle metrics.")
 
-        if state.get("retraining_history"):
-            st.markdown("##### Retraining Decisions")
-            retraining_history = pd.DataFrame(list(reversed(state["retraining_history"][-5:])))
-            retraining_history = retraining_history.drop(columns=["accuracy_gain"], errors="ignore")
-            retraining_columns = [
-                "step",
-                "accepted",
-                "action",
-                "reason",
-                "adaptation_accuracy_gain",
-                "benchmark_accuracy_regression",
-                "production_adaptation_accuracy",
-                "challenger_adaptation_accuracy",
-                "production_benchmark_accuracy",
-                "challenger_benchmark_accuracy",
-                "adaptation_test_examples",
-                "benchmark_test_examples",
-                "version_before",
-                "version_after",
-                "summary_path",
-            ]
-            retraining_history = retraining_history[
-                [column for column in retraining_columns if column in retraining_history.columns]
-            ]
-            st.dataframe(retraining_history, use_container_width=True)
-        if state.get("training_reference_history"):
-            st.markdown("##### Training Reference Versions")
-            training_reference_history = pd.DataFrame(list(reversed(state["training_reference_history"][-5:])))
-            training_reference_columns = [
-                "step",
-                "model_version",
-                "training_reference_name",
-                "training_reference_examples_before",
-                "training_reference_examples",
-                "recent_train_examples",
-                "recent_adaptation_test_examples",
-                "recent_examples_absorbed",
-                "source_batch_name",
-                "dvc_tracked",
-                "dvc_file_path",
-                "summary_path",
-            ]
-            training_reference_history = training_reference_history[
-                [column for column in training_reference_columns if column in training_reference_history.columns]
-            ]
-            st.dataframe(training_reference_history, use_container_width=True)
+
+def _render_lifecycle_history_tables(state: dict[str, Any]) -> None:
+    if state.get("retraining_history"):
+        st.markdown("##### Retraining Decisions")
+        retraining_history = pd.DataFrame(list(reversed(state["retraining_history"][-5:])))
+        retraining_history = retraining_history.drop(columns=["accuracy_gain"], errors="ignore")
+        retraining_columns = [
+            "step",
+            "accepted",
+            "action",
+            "reason",
+            "adaptation_accuracy_gain",
+            "benchmark_accuracy_regression",
+            "production_adaptation_accuracy",
+            "challenger_adaptation_accuracy",
+            "production_benchmark_accuracy",
+            "challenger_benchmark_accuracy",
+            "adaptation_test_examples",
+            "benchmark_test_examples",
+            "version_before",
+            "version_after",
+            "summary_path",
+        ]
+        retraining_history = retraining_history[
+            [column for column in retraining_columns if column in retraining_history.columns]
+        ]
+        st.dataframe(retraining_history, use_container_width=True)
+    if state.get("training_reference_history"):
+        st.markdown("##### Training Reference Versions")
+        training_reference_history = pd.DataFrame(list(reversed(state["training_reference_history"][-5:])))
+        training_reference_columns = [
+            "step",
+            "model_version",
+            "training_reference_name",
+            "training_reference_examples_before",
+            "training_reference_examples",
+            "recent_train_examples",
+            "recent_adaptation_test_examples",
+            "recent_examples_absorbed",
+            "source_batch_name",
+            "dvc_tracked",
+            "dvc_file_path",
+            "summary_path",
+        ]
+        training_reference_history = training_reference_history[
+            [column for column in training_reference_columns if column in training_reference_history.columns]
+        ]
+        st.dataframe(training_reference_history, use_container_width=True)
+
+
+def _build_grafana_dashboard_url(base_url: str, uid: str, slug: str) -> str:
+    normalized_base_url = base_url.rstrip("/")
+    return (
+        f"{normalized_base_url}/d/{uid}/{slug}"
+        "?orgId=1&from=now-15m&to=now&theme=light&kiosk"
+    )
+
+
+def _is_service_available(url: str) -> bool:
+    try:
+        response = requests.get(url, timeout=MONITORING_STATUS_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        return True
+    except requests.RequestException:
+        return False
 
 
 def _render_event_log(state: dict[str, Any]) -> None:

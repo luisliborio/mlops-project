@@ -4,11 +4,12 @@
   },
   "editable": true,
   "graphTooltip": 0,
+  "uid": "mnist-api-overview",
   "panels": [
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "-- Grafana --"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -41,7 +42,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "-- Grafana --"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -74,7 +75,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "-- Grafana --"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -107,7 +108,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "-- Grafana --"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
