@@ -23,9 +23,9 @@ stages:
           benchmark_test_size: 10000
           adaptation_test_size: 0.2
         data.future_batches:
-          clean_batch_a_size: 5000
-          clean_batch_b_size: 5000
-          drifted_inference_batch_size: 3000
+          clean_batch_a_size: 7500
+          clean_batch_b_size: 7500
+          drifted_inference_batch_size: 15000
           noisy_retraining_batch_size: 5000
         model.num_classes: 10
         project.name: mlops-mnist-drift-lab
@@ -33,16 +33,16 @@ stages:
     outs:
     - path: data/interim/base_manifest.json
       hash: md5
-      md5: 71d31b7ee3ddbf7b9ae0e2f18d17dcfd
-      size: 3450
+      md5: 57a010a4ed14e46da1e05d6e0acc7924
+      size: 3462
     - path: data/interim/drift_source_batch.npz
       hash: md5
-      md5: 3c7637c22e2bbdd4f10b4e0beb179569
-      size: 788500
+      md5: 694fbd80446ddd3e57908f1d4de32da2
+      size: 3949763
     - path: data/interim/noisy_retraining_source_batch.npz
       hash: md5
-      md5: 56811691307ac16b0792e8674320ff36
-      size: 1313833
+      md5: 7cc35afb909c03539e604b8d35e80c18
+      size: 1314779
     - path: data/processed/baseline_test.npz
       hash: md5
       md5: ba82e342800f94b4a80f4b22d15ecfa7
@@ -57,12 +57,12 @@ stages:
       size: 52868
     - path: data/processed/clean_batch_a.npz
       hash: md5
-      md5: 5c43f3b729d5a244be72623049c0cfa1
-      size: 1321491
+      md5: 82f316480839e0d4e4fcabfc4319bfb9
+      size: 1985522
     - path: data/processed/clean_batch_b.npz
       hash: md5
-      md5: fda6454660bd9037033421f1c5b03a62
-      size: 1321359
+      md5: 4a7aebc9a7892a7030a0b21a192875ca
+      size: 1969949
     - path: data/raw/mnist.npz
       hash: md5
       md5: 463a909ed498f50521dfa82f8fe9e12c
@@ -72,16 +72,16 @@ stages:
     deps:
     - path: data/interim/base_manifest.json
       hash: md5
-      md5: 71d31b7ee3ddbf7b9ae0e2f18d17dcfd
-      size: 3450
+      md5: 57a010a4ed14e46da1e05d6e0acc7924
+      size: 3462
     - path: data/interim/drift_source_batch.npz
       hash: md5
-      md5: 3c7637c22e2bbdd4f10b4e0beb179569
-      size: 788500
+      md5: 694fbd80446ddd3e57908f1d4de32da2
+      size: 3949763
     - path: data/interim/noisy_retraining_source_batch.npz
       hash: md5
-      md5: 56811691307ac16b0792e8674320ff36
-      size: 1313833
+      md5: 7cc35afb909c03539e604b8d35e80c18
+      size: 1314779
     - path: scripts/prepare_data.py
       hash: md5
       md5: d34ff65c5453e987c938b3391d955dd7
@@ -104,19 +104,19 @@ stages:
           - contrast_shift
           severity: medium
         data.noisy_labels:
-          flip_fraction: 0.1
+          flip_fraction: 0.15
         model.num_classes: 10
         project.random_seed: 42
     outs:
     - path: data/interim/data_manifest.json
       hash: md5
-      md5: a2196b4e86bfd03d13a998c9da4b71d6
-      size: 4569
+      md5: de5f151d0f96a5351ddd4aef85d0a624
+      size: 4594
     - path: data/processed/drifted_inference_batch.npz
       hash: md5
-      md5: feda4a9c44afaadf9c1501e74016746d
-      size: 8372343
+      md5: 3fde5d67164b01b1e2a960405c01a184
+      size: 41856386
     - path: data/processed/noisy_retraining_batch.npz
       hash: md5
-      md5: 19303f754a9b723373f3bb64421e8e48
-      size: 1318644
+      md5: 7922585cd5f62a69ee23f72b1a15dd37
+      size: 1319716

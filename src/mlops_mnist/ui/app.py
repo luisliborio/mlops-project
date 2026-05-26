@@ -84,7 +84,7 @@ def main() -> None:
     )
 
     st.title("MNIST Production Demo")
-    st.caption("Predict with the current production alias and simulate small batch requests.")
+    st.caption("MLOps Simulation Project")
     _render_flash_message()
 
     if ACTIVE_VIEW_KEY not in st.session_state:
@@ -134,7 +134,7 @@ def _render_api_status(health: dict[str, Any] | None) -> None:
         f"Training run: {health.get('source_training_run_id', 'unknown')}"
     )
     if health.get("status") != "ok":
-        st.warning("API is running but no production model is loaded yet. Complete Initial Setup or reload after a promotion.")
+        st.warning("No production model is loaded yet. Execute The Initial Setup.")
 
 
 def _render_initial_setup(
@@ -144,17 +144,15 @@ def _render_initial_setup(
     health: dict[str, Any] | None,
 ) -> None:
     st.subheader("Initial Setup")
-    st.caption(
-        "Use this page for the cold project state before `dvc repro`. "
-        "Run data preparation, launch the initial competitor training, promote the winner, and hard reset back to empty when needed."
-    )
+    st.caption("Control room for starting `dvc repro`.")
+    st.caption("Run data preparation, launch the initial competitor training, promote the winner, and hard reset.")
 
     if setup_state["setup_complete"]:
-        st.success("Initial setup is complete. You can inspect the recorded outputs below, rerun the bootstrap flow, or hard reset back to the empty state.")
+        st.success("Initial setup is complete.")
     elif setup_state.get("mode") == "empty":
-        st.info("The repository is in the empty pre-setup state. Start with `dvc repro`.")
+        st.info("The system is in pre-setup state. Start with `dvc repro`.")
     else:
-        st.info("Initial setup is incomplete. Run `dvc repro` first, then train and promote the initial winner.")
+        st.info("Initial setup is incomplete. Run `dvc repro`, then train and promote the initial winner.")
 
     training_summary = setup_state.get("training_summary") or {}
     promotion_summary = setup_state.get("promotion_summary") or {}
@@ -299,7 +297,7 @@ def _render_lifecycle_simulation(
 ) -> None:
     st.subheader("Lifecycle Simulation")
     st.caption(
-        "Each click is one simulated time step. Record off means preview only. "
+        "Each inference click is one simulated time step. Record off means preview only. "
         "Record on means incoming data is stored for monitoring, labeling, and retraining."
     )
     _render_lifecycle_ui_styles()
@@ -842,12 +840,12 @@ def _handle_retraining_action(
 
 
 def _handle_initial_dvc_repro(repo_root: Path) -> None:
-    with st.spinner("Running dvc repro to materialize the baseline data and scenarios..."):
+    with st.spinner("Running dvc repro to create the baseline data and scenarios..."):
         result = run_setup_command(
             repo_root,
             command=[*resolve_dvc_command(), "repro"],
             action_name="run_dvc_repro",
-            success_message="dvc repro completed. Baseline data and scenario batches are ready.",
+            success_message="dvc repro completed. Data batches are ready.",
             failure_message="dvc repro failed.",
         )
 
@@ -1061,7 +1059,7 @@ def _render_latest_preview(preview_payload: dict[str, Any] | None) -> None:
     metric_col4.metric("Latency (ms)", f"{preview_payload['latency_ms']:.1f}")
 
     if preview_payload["labels_hidden"]:
-        st.info("This batch is being treated as unlabeled live data. Accuracy and F1 stay hidden until Label Data is clicked.")
+        st.info("This batch is being treated as unlabeled live data. Accuracy and F1 are hidden until data is labeled.")
     else:
         st.success(f"Preview batch accuracy: {preview_payload['accuracy']:.4f}")
 
@@ -1085,8 +1083,7 @@ def _render_latest_preview(preview_payload: dict[str, Any] | None) -> None:
         )
     with grid_col:
         preview_grid = _build_latest_preview_grid_image(preview_payload)
-        if preview_grid is not None:
-            st.caption("First 10 images from the last inferred batch")
+        if preview_grid is not None:            
             st.image(preview_grid, use_container_width=True)
 
 
@@ -1198,14 +1195,14 @@ def _render_lifecycle_history_tables(state: dict[str, Any]) -> None:
             "accepted",
             "action",
             "reason",
-            "adaptation_accuracy_gain",
-            "benchmark_accuracy_regression",
-            "production_adaptation_accuracy",
-            "challenger_adaptation_accuracy",
-            "production_benchmark_accuracy",
-            "challenger_benchmark_accuracy",
-            "adaptation_test_examples",
-            "benchmark_test_examples",
+            "adaptation_acc_gain",
+            "benchmark_acc_regression",
+            "production_adaptation_acc",
+            "challenger_adaptation_acc",
+            "production_benchmark_acc",
+            "challenger_benchmark_acc",
+            "adaptation_test_samples",
+            "benchmark_test_samples",
             "version_before",
             "version_after",
             "summary_path",
@@ -1221,11 +1218,11 @@ def _render_lifecycle_history_tables(state: dict[str, Any]) -> None:
             "step",
             "model_version",
             "training_reference_name",
-            "training_reference_examples_before",
-            "training_reference_examples",
-            "recent_train_examples",
-            "recent_adaptation_test_examples",
-            "recent_examples_absorbed",
+            "training_reference_samples_before",
+            "training_reference_samples",
+            "recent_train_samples",
+            "recent_adaptation_test_samples",
+            "recent_samples_absorbed",
             "source_batch_name",
             "dvc_tracked",
             "dvc_file_path",
@@ -1284,7 +1281,7 @@ def _render_compact_status_card(container: Any, label: str, value: str) -> None:
 def _render_event_log(state: dict[str, Any]) -> None:
     st.markdown("#### Event Timeline")
     if not state.get("event_log"):
-        st.caption("Lifecycle messages will appear here as you preview, record, label, and retrain.")
+        st.caption("Lifecycle messages LIVE.")
         return
 
     timeline = list(reversed(state["event_log"][-20:]))

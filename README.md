@@ -1,117 +1,99 @@
 # MLOps MNIST Drift Lab
 
-This repository contains a lightweight end-to-end MLOps project built around MNIST digit classification. The project is intentionally scoped to emphasize the ML lifecycle rather than model complexity: reproducible data preparation, experiment tracking, model registration, deployment, monitoring, retraining, and safe rejection of degraded challengers.
+This project is a small end-to-end MLOps demo built on MNIST. It prepares data with DVC, tracks and registers models in MLflow, serves predictions through FastAPI, exposes a Streamlit control UI, and shows monitoring in Prometheus and Grafana.
 
-## Scope
+The app demonstrates three behaviors:
 
-The MVP demonstrates three controlled production scenarios:
+- normal production inference
+- drift detection on corrupted incoming batches
+- retraining with acceptance or rejection of a challenger model
 
-- successful retraining after receiving additional clean labeled data
-- inference-time covariate drift through image corruption such as noise, blur, rotation, or contrast changes
-- failed retraining caused by noisy labels, where the challenger model is rejected and the current production model remains active
+## Recommended Run Path
 
-## Stack
+Use Docker Compose.
 
-- TensorFlow and Keras for the digit classifier
-- DVC for dataset and pipeline versioning
-- MLflow for experiment tracking and model registry
-- FastAPI for online inference
-- Streamlit for a simple demo interface
-- Prometheus and Grafana for monitoring
-- Docker Compose as the MVP deployment target
+Requirements:
 
-## Repository Layout
+- Docker
+- Docker Compose
+- Used Local ports: `8000`, `8501`, `5000`, `9090`, `3000`
 
-```text
-src/mlops_mnist/      Python package for data, training, API, monitoring, and utilities
-configs/              Static configuration files beyond params.yaml
-data/                 Local dataset structure for raw, interim, and processed artifacts
-monitoring/           Prometheus and Grafana configuration assets
-scripts/              One-off entrypoints and helper scripts
-tests/                Smoke and unit tests
-params.yaml           Project-level configuration for data scenarios and thresholds
+From the repository root:
+
+```bash
+docker compose up -d --build
 ```
 
-## Day 1 Decisions
+Streamlit UI (Simulation Control Panel):
 
-- Environment management uses `.venv` plus `requirements.txt`.
-- Docker Compose is the only deployment target for the MVP.
-- DVC remains the primary data versioning layer; MLflow handles experiments and model lifecycle.
-- The initial data plan uses a small clean baseline set plus separate clean, drifted, and noisy future batches.
+- `http://127.0.0.1:8501`
 
-## Local Setup
+Other Endpoints:
+
+- API ----------- `http://127.0.0.1:8000`
+- MLflow: ------ `http://127.0.0.1:5000`
+- Prometheus: - `http://127.0.0.1:9090`
+- Grafana: ------ `http://127.0.0.1:3000`
+
+## First-Time Setup In The UI
+
+After the containers are running:
+
+1. open the `Initial Setup` page in Streamlit
+2. click `Run dvc repro` (See `dvc.yaml` stages)
+3. click `Run initial training + promote winner`
+
+After that, the app is ready for predictions, lifecycle simulation, MLflow inspection, and monitoring.
+
+To stop the stack:
+
+```bash
+docker compose down
+```
+
+## Local Run Without Docker
+
+Use this only if you want to run the API, UI, and MLflow UI directly from the Python environment.
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
-```
-
-## UI Bootstrap Flow
-
-After the environment is installed, the simplest way to bring the project up is through the Streamlit UI.
-
-```bash
 .venv/bin/python run_system.py
 ```
 
-That command starts the API, the Streamlit UI, and the local MLflow UI.
+This starts:
 
-1. start the API service
-2. start the UI
-3. open the `Initial Setup` page
-4. run `dvc repro`
-5. run the initial training flow, which automatically promotes the winner
+- FastAPI
+- Streamlit
+- MLflow UI
 
-If you prefer to run the services separately, use `.venv/bin/python scripts/run_api.py` for the API and `streamlit run scripts/run_ui.py` for the UI.
+If you also want Prometheus and Grafana, use Docker Compose.
 
-The local service URLs are:
+## If You Change `params.yaml`
 
-- API: `http://127.0.0.1:8000`
-- Streamlit UI: `http://127.0.0.1:8501`
-- MLflow UI: `http://127.0.0.1:5000`
+Restarting containers is only enough for settings that are read directly at app startup.
 
-The `Initial Setup` page stays available after bootstrap and also exposes a hard reset back to the empty pre-setup state when you want to rerun the project from scratch after changing `params.yaml`.
+- If you changed `monitoring.*` or `retraining.*`, restart the relevant services.
+- If you changed `data.*` or `model.*`, restart is not enough.
 
-## Docker Compose Workflow
+For `data.*` or `model.*` changes, use this flow:
 
-The packaged deployment path uses a root `docker-compose.yml`.
+1. open the `Initial Setup` page
+2. click `Hard reset to empty state`
+3. click `Run dvc repro`
+4. click `Run initial training + promote winner`
 
-```bash
-docker compose build
-docker compose up -d
-```
+This is necessary because those settings affect generated datasets, frozen baseline artifacts, and trained model outputs.
 
-That stack starts:
+## Generated State
 
-- the FastAPI API
-- the Streamlit UI
-- the MLflow UI
-- Prometheus
-- Grafana
+The Docker setup bind-mounts the repository into the containers. Generated files stay in the project folder, including:
 
-The packaged local URLs are:
-
-- API: `http://127.0.0.1:8000`
-- Streamlit UI: `http://127.0.0.1:8501`
-- MLflow UI: `http://127.0.0.1:5000`
-- Prometheus: `http://127.0.0.1:9090`
-- Grafana: `http://127.0.0.1:3000`
-
-Inside Docker, the Streamlit app still remains the control surface:
-
-1. open `Initial Setup`
-2. run `dvc repro`
-3. run the initial training flow and promotion from the UI
-
-The first Docker version bind-mounts the repo into the app containers, so generated state still appears directly in the project folder, including `mlflow.db`, `artifacts/`, `models/`, `data/`, `logs/`, and `ui_lifecycle/`.
-
-## Next Steps
-
-Day 2 work will implement the first executable slice of the pipeline:
-
-- MNIST download and preprocessing
-- deterministic scenario generation for clean incremental batches
-- deterministic drifted inference batches
-- deterministic noisy-label retraining batches
+- `mlflow.db`
+- `artifacts/`
+- `data/`
+- `logs/`
+- `models/`
+- `ui_lifecycle/`

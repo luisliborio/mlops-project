@@ -1,5 +1,0 @@
-outs:
-- md5: 123cafd31aea8d59e4091a41e3d72c53
-  size: 7234340
-  hash: md5
-  path: production_training_reference_20260525_184243.npz
