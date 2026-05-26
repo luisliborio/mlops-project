@@ -15,9 +15,9 @@ data:
     benchmark_test_size: 10000
     adaptation_test_size: 0.2
   future_batches:
-    clean_batch_a_size: 5000
-    clean_batch_b_size: 5000
-    drifted_inference_batch_size: 3000
+    clean_batch_a_size: 7500
+    clean_batch_b_size: 7500
+    drifted_inference_batch_size: 15000
     noisy_retraining_batch_size: 5000
   drift:
     transforms:
@@ -27,7 +27,7 @@ data:
       - contrast_shift
     severity: medium
   noisy_labels:
-    flip_fraction: 0.10
+    flip_fraction: 0.15
 
 model:
   family: keras_cnn
@@ -36,12 +36,12 @@ model:
   candidates:
     - name: cnn_small
       conv_filters: [8, 8]
-      dense_units: 16
+      dense_units: 8
       dropout: 0.10
     - name: cnn_medium
       conv_filters: [8, 16]
-      dense_units: 32
-      dropout: 0.2
+      dense_units: 16
+      dropout: 0.15
 
 monitoring:
   system_metrics:

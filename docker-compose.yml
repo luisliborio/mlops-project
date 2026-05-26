@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: mnist-lab:v3
+    image: lsmliborio/mnist-lab:v3
     working_dir: ${PWD}
     command: ["python", "scripts/run_api.py"]
     environment:
@@ -19,7 +19,7 @@ services:
     restart: unless-stopped
 
   ui:
-    image: mnist-lab:v3
+    image: lsmliborio/mnist-lab:v3
     working_dir: ${PWD}
     command:
       [
@@ -55,7 +55,7 @@ services:
     restart: unless-stopped
 
   mlflow:
-    image: mnist-lab:v3
+    image: lsmliborio/mnist-lab:v3
     working_dir: ${PWD}
     command: ["python", "scripts/run_mlflow_ui.py", "--host", "0.0.0.0", "--workers", "1"]
     environment:
