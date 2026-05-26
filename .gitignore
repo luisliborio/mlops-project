@@ -2,6 +2,7 @@ previous_practices/
 planning/
 guide/
 tests/
+images/
 
 # Local Python environments
 .venv/

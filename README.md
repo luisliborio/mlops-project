@@ -8,6 +8,11 @@ The app demonstrates three behaviors:
 - drift detection on corrupted incoming batches
 - retraining with acceptance or rejection of a challenger model
 
+There are two main dashboards under Grafana's umbrella:
+
+- Unsupervised metrics; tracks label-agnostic parameters 
+- Supervised metrics; tracks traditional metrics that are available after the system records labels
+
 ## Recommended Run Path
 
 Use Docker Compose.
