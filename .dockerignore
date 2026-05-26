@@ -1,0 +1,25 @@
+.git/
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.runtime/
+
+artifacts/
+logs/
+mlruns/
+models/
+registry/
+training/
+ui_lifecycle/
+mlflow.db
+
+data/interim/
+data/processed/
+data/raw/
+
+.dvc/cache/
+
+planning/
+previous_practices/
+Project Proposal.pdf

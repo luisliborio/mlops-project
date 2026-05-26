@@ -447,6 +447,9 @@ def _load_runtime_config(repo_root: Path) -> dict[str, str]:
 
 
 def _default_api_base_url(runtime_config: dict[str, str]) -> str:
+    explicit_base_url = runtime_config.get("API_BASE_URL")
+    if explicit_base_url:
+        return explicit_base_url
     api_port = runtime_config.get("API_PORT", "8000")
     return f"http://127.0.0.1:{api_port}"
 

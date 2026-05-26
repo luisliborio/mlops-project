@@ -74,6 +74,39 @@ The local service URLs are:
 
 The `Initial Setup` page stays available after bootstrap and also exposes a hard reset back to the empty pre-setup state when you want to rerun the project from scratch after changing `params.yaml`.
 
+## Docker Compose Workflow
+
+The packaged deployment path uses a root `docker-compose.yml`.
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+That stack starts:
+
+- the FastAPI API
+- the Streamlit UI
+- the MLflow UI
+- Prometheus
+- Grafana
+
+The packaged local URLs are:
+
+- API: `http://127.0.0.1:8000`
+- Streamlit UI: `http://127.0.0.1:8501`
+- MLflow UI: `http://127.0.0.1:5000`
+- Prometheus: `http://127.0.0.1:9090`
+- Grafana: `http://127.0.0.1:3000`
+
+Inside Docker, the Streamlit app still remains the control surface:
+
+1. open `Initial Setup`
+2. run `dvc repro`
+3. run the initial training flow and promotion from the UI
+
+The first Docker version bind-mounts the repo into the app containers, so generated state still appears directly in the project folder, including `mlflow.db`, `artifacts/`, `models/`, `data/`, `logs/`, and `ui_lifecycle/`.
+
 ## Next Steps
 
 Day 2 work will implement the first executable slice of the pipeline:

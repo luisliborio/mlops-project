@@ -1,11 +1,32 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Mapping
 
 from dotenv import dotenv_values
 
 from mlops_mnist.utils.mlflow_compat import prepare_local_tracking_uri, resolve_runtime_write_path
+
+
+RUNTIME_ENV_KEYS: tuple[str, ...] = (
+    "MLFLOW_TRACKING_URI",
+    "MLFLOW_ARTIFACT_ROOT",
+    "MLFLOW_EXPERIMENT_NAME",
+    "MLFLOW_REGISTERED_MODEL_NAME",
+    "DATA_ROOT",
+    "MODELS_DIR",
+    "LOGS_DIR",
+    "API_BASE_URL",
+    "API_HOST",
+    "API_PORT",
+    "UI_PORT",
+    "MLFLOW_UI_PORT",
+    "PROMETHEUS_PORT",
+    "GRAFANA_PORT",
+    "LIFECYCLE_METRICS_PORT",
+    "RANDOM_SEED",
+)
 
 
 def load_runtime_config(repo_root: str | Path) -> dict[str, str]:
@@ -19,6 +40,7 @@ def load_runtime_config(repo_root: str | Path) -> dict[str, str]:
         config.update({key: value for key, value in dotenv_values(example_path).items() if value})
     if env_path.exists():
         config.update({key: value for key, value in dotenv_values(env_path).items() if value})
+    config.update({key: os.environ[key] for key in RUNTIME_ENV_KEYS if os.environ.get(key)})
 
     return config
 

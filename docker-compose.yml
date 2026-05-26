@@ -1,0 +1,109 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mnist-lab:v3
+    working_dir: ${PWD}
+    command: ["python", "scripts/run_api.py"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      MLFLOW_TRACKING_URI: "sqlite:///${PWD}/mlflow.db"
+      MLFLOW_ARTIFACT_ROOT: "${PWD}/artifacts"
+    volumes:
+      - .:${PWD}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  ui:
+    image: mnist-lab:v3
+    working_dir: ${PWD}
+    command:
+      [
+        "python",
+        "-m",
+        "streamlit",
+        "run",
+        "scripts/run_ui.py",
+        "--server.address",
+        "0.0.0.0",
+        "--server.port",
+        "8501"
+      ]
+    depends_on:
+      - api
+      - mlflow
+    environment:
+      PYTHONUNBUFFERED: "1"
+      API_BASE_URL: "http://api:8000"
+      UI_PORT: "8501"
+      MLFLOW_UI_PORT: "5000"
+      PROMETHEUS_PORT: "9090"
+      GRAFANA_PORT: "3000"
+      LIFECYCLE_METRICS_PORT: "9108"
+      MLFLOW_TRACKING_URI: "sqlite:///${PWD}/mlflow.db"
+      MLFLOW_ARTIFACT_ROOT: "${PWD}/artifacts"
+    volumes:
+      - .:${PWD}
+    ports:
+      - "8501:8501"
+    expose:
+      - "9108"
+    restart: unless-stopped
+
+  mlflow:
+    image: mnist-lab:v3
+    working_dir: ${PWD}
+    command: ["python", "scripts/run_mlflow_ui.py", "--host", "0.0.0.0", "--workers", "1"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      MLFLOW_UI_PORT: "5000"
+      MLFLOW_TRACKING_URI: "sqlite:///${PWD}/mlflow.db"
+      MLFLOW_ARTIFACT_ROOT: "${PWD}/artifacts"
+    volumes:
+      - .:${PWD}
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    depends_on:
+      - api
+      - ui
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.4
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./docker/grafana-prometheus-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./monitoring/grafana/provisioning/dashboards/dashboard.yml:/etc/grafana/provisioning/dashboards/dashboard.yml:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
