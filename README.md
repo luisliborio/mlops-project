@@ -1,6 +1,6 @@
-# MLOps MNIST Drift Lab
+# MLOps MNIST Lab
 
-This project is a small end-to-end MLOps demo built on MNIST. It prepares data with DVC, tracks and registers models in MLflow, serves predictions through FastAPI, exposes a Streamlit control UI, and shows monitoring in Prometheus and Grafana.
+This project is a small end-to-end MLOps demo built on MNIST. Its main objetives consistit in preparing a MLops lifecycle simultion for versioning data with DVC, tracking and registering models in MLflow, continuously serving predictions through FastAPI, and monitoring in Prometheus and Grafana. It exposes a Streamlit UI as general control panel.
 
 The app demonstrates three behaviors:
 
@@ -8,7 +8,7 @@ The app demonstrates three behaviors:
 - drift detection on corrupted incoming batches
 - retraining with acceptance or rejection of a challenger model
 
-There are two main dashboards under Grafana's umbrella:
+There are two monitoring dashboards in Grafana's interface:
 
 - Unsupervised metrics; tracks label-agnostic parameters 
 - Supervised metrics; tracks traditional metrics that are available after the system records labels

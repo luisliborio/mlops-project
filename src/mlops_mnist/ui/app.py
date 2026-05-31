@@ -17,7 +17,7 @@ from mlops_mnist.monitoring.prometheus_exporter import (
     ensure_lifecycle_metrics_server,
     sync_lifecycle_state_metrics,
 )
-from mlops_mnist.app_reset import reset_application_state, reset_to_pre_setup_state
+from mlops_mnist.app_reset import reset_to_pre_setup_state
 from mlops_mnist.setup_state import (
     SETUP_MODE_INITIALIZED,
     evaluate_setup_state,
@@ -55,7 +55,6 @@ from mlops_mnist.utils.runtime import load_runtime_config, resolve_runtime_port
 REQUEST_TIMEOUT_SECONDS = 30
 FLASH_MESSAGE_KEY = "ui_flash_message"
 ACTIVE_VIEW_KEY = "ui_active_view"
-PENDING_FULL_RESET_KEY = "ui_pending_full_system_reset"
 INITIAL_SETUP_VIEW = "Initial Setup"
 SAMPLE_PREDICTION_VIEW = "Sample Prediction"
 UPLOAD_IMAGE_VIEW = "Upload Image"
@@ -301,8 +300,6 @@ def _render_lifecycle_simulation(
         "Record on means incoming data is stored for monitoring, labeling, and retraining."
     )
     _render_lifecycle_ui_styles()
-
-    _consume_pending_full_system_reset(repo_root=repo_root, api_base_url=api_base_url)
     state = load_lifecycle_state(repo_root)
     if _refresh_latest_preview_labels(repo_root, state):
         save_lifecycle_state(repo_root, state)
@@ -380,7 +377,7 @@ def _render_lifecycle_simulation(
     pending_labeled = count_pending_labeled_samples(state)
     ready_labeled = count_ready_labeled_samples(state)
 
-    control_col1, control_col2, control_col3, control_col4, control_col5 = st.columns(5)
+    control_col1, control_col2, control_col3, control_col4 = st.columns(4)
     run_next_clicked = control_col1.button(
         "Run Next Batch",
         use_container_width=True,
@@ -400,11 +397,6 @@ def _render_lifecycle_simulation(
         "Retrain",
         use_container_width=True,
         disabled=ready_labeled < min_recent_samples,
-    )
-    control_col5.button(
-        "Full System Reset",
-        use_container_width=True,
-        on_click=_queue_full_system_reset,
     )
 
     if run_next_clicked:
@@ -926,38 +918,6 @@ def _handle_pre_setup_reset(repo_root: Path, api_base_url: str) -> None:
             "Hard reset complete. The repository is back to the empty pre-setup state and the running API was refreshed.",
         )
     st.rerun()
-
-
-def _queue_full_system_reset() -> None:
-    st.session_state[PENDING_FULL_RESET_KEY] = True
-
-
-def _consume_pending_full_system_reset(repo_root: Path, api_base_url: str) -> None:
-    if not st.session_state.pop(PENDING_FULL_RESET_KEY, False):
-        return
-
-    with st.spinner("Restoring the app to its initial state..."):
-        reset_summary = reset_application_state(
-            repo_root=repo_root,
-            params_path=repo_root / "params.yaml",
-        )
-
-    restored_batch_name = reset_summary["lifecycle"]["active_batch_name"]
-    restored_batch_size = int(reset_summary["lifecycle"]["batch_size"])
-    st.session_state["lifecycle_batch_name"] = restored_batch_name
-    st.session_state["lifecycle_batch_size"] = restored_batch_size
-
-    reload_summary = _reload_api_model(api_base_url)
-    if reload_summary is None:
-        _set_flash_message(
-            "warning",
-            "The app was reset to the initial production-v1 state, but the API could not reload automatically. Restart or reload the API to serve version 1.",
-        )
-    else:
-        _set_flash_message(
-            "success",
-            f"Full reset complete. The app is back on production version {reload_summary.get('model_version', '1')} with the default lifecycle source {restored_batch_name}.",
-        )
 
 
 def _build_preview_payload(
