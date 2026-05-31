@@ -7,10 +7,12 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
+# Allow this wrapper script to import the local package.
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from mlops_mnist.ui.app import main
 
 
+# Run the Streamlit application directly when the wrapper is executed.
 main()

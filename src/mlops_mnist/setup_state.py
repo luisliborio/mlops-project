@@ -21,6 +21,7 @@ SETUP_MODE_UNKNOWN = "unknown"
 
 
 def load_setup_status(repo_root: str | Path) -> dict[str, Any]:
+    # Load the persisted UI setup status or return an empty default.
     repo_root = Path(repo_root).resolve()
     status_path = repo_root / SETUP_STATUS_RELATIVE_PATH
     if not status_path.exists():
@@ -38,6 +39,7 @@ def load_setup_status(repo_root: str | Path) -> dict[str, Any]:
 
 
 def save_setup_status(repo_root: str | Path, payload: dict[str, Any]) -> Path:
+    # Persist the current UI setup status as JSON.
     repo_root = Path(repo_root).resolve()
     status_path = repo_root / SETUP_STATUS_RELATIVE_PATH
     status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +59,7 @@ def record_setup_action(
     mode: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Append one setup action and keep only the most recent history entries.
     status = load_setup_status(repo_root)
     action = {
         "timestamp": _utc_now(),
@@ -80,6 +83,7 @@ def record_setup_action(
 
 
 def list_dvc_output_paths(repo_root: str | Path, dvc_path: str | Path = "dvc.yaml") -> list[Path]:
+    # Collect every declared DVC output path from dvc.yaml.
     repo_root = Path(repo_root).resolve()
     resolved_dvc_path = _resolve_path(repo_root, dvc_path)
     if not resolved_dvc_path.exists():
@@ -96,6 +100,7 @@ def list_dvc_output_paths(repo_root: str | Path, dvc_path: str | Path = "dvc.yam
 
 
 def latest_training_summary(repo_root: str | Path) -> dict[str, Any] | None:
+    # Read the latest training summary and identify its best candidate.
     summary_path = _latest_match(Path(repo_root).resolve(), TRAINING_SUMMARY_GLOB)
     if summary_path is None:
         return None
@@ -123,6 +128,7 @@ def latest_training_summary(repo_root: str | Path) -> dict[str, Any] | None:
 
 
 def latest_promotion_summary(repo_root: str | Path) -> dict[str, Any] | None:
+    # Read the latest model promotion summary, if one exists.
     summary_path = _latest_match(Path(repo_root).resolve(), PROMOTION_SUMMARY_GLOB)
     if summary_path is None:
         return None
@@ -133,6 +139,7 @@ def latest_promotion_summary(repo_root: str | Path) -> dict[str, Any] | None:
 
 
 def evaluate_setup_state(repo_root: str | Path, dvc_path: str | Path = "dvc.yaml") -> dict[str, Any]:
+    # Combine data, training, and promotion checks into one setup status view.
     repo_root = Path(repo_root).resolve()
     status = load_setup_status(repo_root)
     dvc_outputs = list_dvc_output_paths(repo_root, dvc_path=dvc_path)
@@ -171,6 +178,7 @@ def evaluate_setup_state(repo_root: str | Path, dvc_path: str | Path = "dvc.yaml
 
 
 def resolve_dvc_command() -> list[str]:
+    # Prefer the installed dvc binary and fall back to python -m dvc.
     dvc_executable = shutil.which("dvc")
     if dvc_executable is not None:
         return [dvc_executable]
@@ -191,6 +199,7 @@ def run_setup_command(
     mode_on_success: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Run one setup command and record its outcome for the UI.
     repo_root = Path(repo_root).resolve()
     result = subprocess.run(
         command,

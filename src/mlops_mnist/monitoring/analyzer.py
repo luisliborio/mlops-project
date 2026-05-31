@@ -34,12 +34,14 @@ def analyze_batch_monitoring(
     max_samples: int | None = None,
     use_clean_labels: bool = False,
 ) -> dict[str, Any]:
+    # Compare one labeled batch against the baseline and decide whether to alert.
     params_path = Path(params_path).resolve()
     repo_root = params_path.parent
     params = load_project_params(params_path)
     session_dir = resolve_runtime_write_path(repo_root, output_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
     session_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load the baseline snapshot that defines the reference behavior.
     baseline_snapshot = _resolve_baseline_snapshot(
         repo_root=repo_root,
         params_path=params_path,
@@ -58,6 +60,7 @@ def analyze_batch_monitoring(
     )
     current_report = evaluation_summary["reports"][0]
 
+    # Compute drift signals used by monitoring and retraining.
     thresholds = params["monitoring"]["thresholds"]
     min_recent_samples = int(params["retraining"]["min_recent_samples"])
     histogram_js_divergence = compute_pixel_histogram_js_divergence(
@@ -72,6 +75,7 @@ def analyze_batch_monitoring(
     confidence_drop = float(baseline_report["mean_confidence"] - current_report["mean_confidence"])
     accuracy_drop = float(baseline_report["accuracy"] - current_report["accuracy"])
 
+    # Convert metric changes into alert names.
     alerts = []
     if float(current_report["accuracy"]) < float(thresholds["min_rolling_accuracy"]):
         alerts.append("rolling_accuracy_below_threshold")
@@ -132,6 +136,7 @@ def analyze_batch_monitoring(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Expose monitoring analysis through a small command-line interface.
     parser = argparse.ArgumentParser(
         description="Analyze one labeled batch for drift and retraining alerts.",
     )
@@ -175,6 +180,7 @@ def compute_pixel_histogram_js_divergence(
     current_batch_path: str | Path,
     bins: int = 32,
 ) -> float:
+    # Compare baseline and current image histograms with one distance score.
     baseline_images = _load_images(repo_root, baseline_batch_path)
     current_images = _load_images(repo_root, current_batch_path)
     baseline_distribution = _compute_histogram_distribution(baseline_images, bins=bins)
@@ -183,6 +189,7 @@ def compute_pixel_histogram_js_divergence(
 
 
 def compute_js_divergence(reference_values: list[float] | np.ndarray, current_values: list[float] | np.ndarray) -> float:
+    # Compute Jensen-Shannon divergence between two distributions.
     reference = np.asarray(reference_values, dtype=np.float64)
     current = np.asarray(current_values, dtype=np.float64)
 
@@ -200,6 +207,7 @@ def _resolve_baseline_snapshot(
     params_path: Path,
     baseline_snapshot_path: str | Path | None,
 ) -> dict[str, Any]:
+    # Reuse the latest frozen baseline snapshot or create a new one.
     if baseline_snapshot_path is not None:
         snapshot_path = _resolve_path(repo_root, baseline_snapshot_path)
         payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
@@ -231,6 +239,7 @@ def _select_report(summary_payload: dict[str, Any], batch_name: str) -> dict[str
 
 
 def _select_histogram_reference(summary_payload: dict[str, Any], fallback_report: dict[str, Any]) -> dict[str, Any]:
+    # Prefer the training reference data for histogram drift comparisons.
     reference_data = summary_payload.get("production_reference_data")
     if isinstance(reference_data, dict) and reference_data.get("batch_path"):
         return {
@@ -247,6 +256,7 @@ def _select_histogram_reference(summary_payload: dict[str, Any], fallback_report
 
 
 def _compute_histogram_distribution(images: np.ndarray, bins: int) -> np.ndarray:
+    # Turn image pixels into a normalized histogram distribution.
     histogram, _ = np.histogram(images.reshape(-1), bins=bins, range=(0.0, 1.0))
     histogram = histogram.astype(np.float64)
     histogram = histogram / np.clip(histogram.sum(), 1e-12, None)
@@ -275,6 +285,7 @@ def _normalize_report_paths(repo_root: Path, payload: dict[str, Any]) -> dict[st
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    # Persist JSON artifacts with stable formatting.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

@@ -30,6 +30,7 @@ RUNTIME_ENV_KEYS: tuple[str, ...] = (
 
 
 def load_runtime_config(repo_root: str | Path) -> dict[str, str]:
+    # Merge example defaults, local .env values, and process environment overrides.
     repo_root = Path(repo_root).resolve()
     config: dict[str, str] = {}
 
@@ -46,6 +47,7 @@ def load_runtime_config(repo_root: str | Path) -> dict[str, str]:
 
 
 def resolve_tracking_uri(repo_root: str | Path, raw_tracking_uri: str) -> str:
+    # Expand repo-relative sqlite URIs into absolute paths.
     repo_root = Path(repo_root).resolve()
     if raw_tracking_uri.startswith("sqlite:////"):
         return raw_tracking_uri
@@ -62,6 +64,7 @@ def prepare_runtime_tracking_uri(
     runtime_config: Mapping[str, str],
     default_tracking_uri: str = "sqlite:///mlflow.db",
 ) -> str:
+    # Resolve the tracking URI and make sure the local copy is writable.
     tracking_uri = resolve_tracking_uri(
         repo_root,
         runtime_config.get("MLFLOW_TRACKING_URI", default_tracking_uri),
@@ -74,6 +77,7 @@ def resolve_artifact_root(
     runtime_config: Mapping[str, str],
     default_artifact_root: str = "./artifacts",
 ) -> Path:
+    # Resolve the artifact root and create it when needed.
     repo_root = Path(repo_root).resolve()
     artifact_root = resolve_runtime_write_path(
         repo_root,
@@ -84,6 +88,7 @@ def resolve_artifact_root(
 
 
 def resolve_runtime_port(runtime_config: Mapping[str, str], key: str, default: int) -> int:
+    # Read a port from the runtime config and fall back to the default on bad values.
     raw_value = runtime_config.get(key)
     if raw_value is None:
         return int(default)

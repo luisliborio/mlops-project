@@ -67,11 +67,13 @@ def run_retraining_workflow(
     force_retrain: bool = False,
     promote_on_accept: bool = True,
 ) -> dict[str, Any]:
+    # Run the end-to-end retraining decision for one recent labeled batch.
     params_path = Path(params_path).resolve()
     repo_root = params_path.parent
     params = load_project_params(params_path)
     runtime_config = _load_runtime_config(repo_root)
 
+    # Resolve registry settings and the retraining acceptance policy.
     tracking_uri = _resolve_tracking_uri(
         repo_root,
         runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
@@ -109,6 +111,7 @@ def run_retraining_workflow(
     production_uri = f"models:/{resolved_model_name}/{production_version.version}"
     current_training_reference = load_training_reference_data(repo_root, production_version.tags)
 
+    # Use monitoring output to decide which batch should drive retraining.
     monitoring_summary = _resolve_monitoring_summary(
         repo_root=repo_root,
         params_path=params_path,
@@ -130,6 +133,7 @@ def run_retraining_workflow(
     models_root.mkdir(parents=True, exist_ok=True)
     summary_path = session_dir / "retraining_summary.json"
 
+    # Exit early when monitoring did not request retraining.
     if not force_retrain and not monitoring_summary["should_retrain"]:
         summary = {
             "decision": {
@@ -160,6 +164,7 @@ def run_retraining_workflow(
         summary["summary_path"] = str(summary_path.relative_to(repo_root))
         return summary
 
+    # Split the new labeled batch into fit and adaptation-evaluation slices.
     batch_payload = _load_retraining_batch(
         resolved_batch_path,
         use_clean_labels_for_evaluation=use_clean_labels_for_evaluation,
@@ -190,6 +195,7 @@ def run_retraining_workflow(
     )
     benchmark_batch = _load_labeled_batch(repo_root / "data" / "processed" / f"{BENCHMARK_BATCH_NAME}.npz")
 
+    # Measure the current production model before training a challenger.
     production_reference_model = mlflow.tensorflow.load_model(production_uri)
     production_adaptation_metrics = _evaluate_model_on_arrays(
         model=production_reference_model,
@@ -202,6 +208,7 @@ def run_retraining_workflow(
         labels=benchmark_batch["labels"],
     )
 
+    # Fine-tune a challenger from the current production weights.
     challenger_model, challenger_history = _fit_model_from_base_uri(
         base_model_uri=production_uri,
         train_images=training_split["train_images"],
@@ -224,6 +231,7 @@ def run_retraining_workflow(
         labels=benchmark_batch["labels"],
     )
 
+    # Compare challenger gains against the acceptance gates.
     decision = decide_challenger_promotion(
         production_adaptation_metrics=production_adaptation_metrics,
         challenger_adaptation_metrics=challenger_adaptation_metrics,
@@ -245,6 +253,7 @@ def run_retraining_workflow(
     version_after = str(production_version.version)
     run_name = f"retrain-{resolved_batch_name}-{session_dir.name}"
     with mlflow.start_run(run_name=run_name) as run:
+        # Log the retraining inputs and the challenger-versus-production metrics.
         mlflow.log_params(
             {
                 "registered_model_name": resolved_model_name,
@@ -297,6 +306,7 @@ def run_retraining_workflow(
         mlflow.log_artifact(str(model_path), artifact_path="challenger")
 
         if decision["accepted"] and promote_on_accept:
+            # Refit on the absorbed training reference before promotion.
             promoted_training_split = _split_training_corpus(
                 images=absorbed_training_payload["images"],
                 labels=absorbed_training_payload["labels"],
@@ -352,8 +362,10 @@ def run_retraining_workflow(
             promotion_payload["training_reference_dvc"] = promoted_training_reference["dvc"]
             version_after = str(promotion_payload["registered_version"])
         else:
+            # Still log the challenger so the run keeps a copy of the comparison model.
             mlflow.tensorflow.log_model(challenger_model, artifact_path="model")
 
+    # Save the final comparison and promotion outcome for later review.
     summary = {
         "decision": decision,
         "monitoring_summary": monitoring_summary["summary_path"],
@@ -450,6 +462,7 @@ def decide_challenger_promotion(
     max_benchmark_accuracy_regression: float,
     keep_production_on_failure: bool,
 ) -> dict[str, Any]:
+    # Apply the promotion gates used by the retraining workflow.
     adaptation_accuracy_gain = float(
         challenger_adaptation_metrics["accuracy"] - production_adaptation_metrics["accuracy"]
     )
@@ -488,6 +501,7 @@ def decide_challenger_promotion(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Expose retraining through a small command-line interface.
     parser = argparse.ArgumentParser(
         description="Run the retraining decision workflow for one recent labeled batch.",
     )
@@ -582,6 +596,7 @@ def _resolve_monitoring_summary(
     retraining_batch_name: str | None,
     retraining_batch_path: str | Path | None,
 ) -> dict[str, Any]:
+    # Reuse an existing monitoring summary or create one on demand.
     if monitoring_summary_path is not None:
         path = _resolve_path(repo_root, monitoring_summary_path)
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -602,6 +617,7 @@ def _resolve_retraining_source(
     retraining_batch_name: str | None,
     retraining_batch_path: str | Path | None,
 ) -> tuple[str, Path]:
+    # Decide which batch file will provide the new labeled data.
     if retraining_batch_path is not None:
         resolved_path = _resolve_path(repo_root, retraining_batch_path)
         return resolved_path.stem, resolved_path
@@ -616,6 +632,7 @@ def _load_retraining_batch(
     batch_path: Path,
     use_clean_labels_for_evaluation: bool,
 ) -> dict[str, Any]:
+    # Load training labels and optional clean evaluation labels from one batch.
     with np.load(batch_path) as batch:
         images = batch["images"].astype(np.float32)
         train_labels = batch["labels"].astype(np.int64)
@@ -638,6 +655,7 @@ def _split_recent_batch_for_adaptation(
     adaptation_test_size: float | int,
     seed: int,
 ) -> dict[str, np.ndarray]:
+    # Hold out part of the recent batch to measure local adaptation gains.
     if len(images) < 2:
         raise ValueError("Retraining batch must contain at least 2 samples")
 
@@ -667,6 +685,7 @@ def _split_training_corpus(
     validation_size: float | int,
     seed: int,
 ) -> dict[str, np.ndarray]:
+    # Split the fit corpus into train and validation subsets.
     if len(images) < 2:
         raise ValueError("Training corpus must contain at least 2 samples")
 
@@ -693,6 +712,7 @@ def _combine_available_training_data(
     current_training_reference: dict[str, Any],
     batch_payload: dict[str, Any],
 ) -> dict[str, np.ndarray]:
+    # Append recent labeled data to the current production training reference.
     recent_images = np.asarray(batch_payload["images"], dtype=np.float32)
     recent_labels = np.asarray(batch_payload["train_labels"], dtype=np.int64)
     if len(recent_images) != len(recent_labels):
@@ -774,6 +794,7 @@ def _fit_model_from_base_uri(
     batch_size: int,
     seed: int,
 ) -> tuple[keras.Model, dict[str, list[float]]]:
+    # Fine-tune a copy of the current production model.
     keras.backend.clear_session()
     keras.utils.set_random_seed(seed)
 
@@ -801,6 +822,7 @@ def _fit_model_from_base_uri(
 
 
 def _version_training_reference_with_dvc(repo_root: Path, batch_path: Path) -> dict[str, Any]:
+    # Track the promoted training reference with DVC when available.
     dvc_executable = shutil.which("dvc")
     if dvc_executable is None:
         local_dvc = repo_root / ".venv" / "bin" / "dvc"
@@ -832,6 +854,7 @@ def _version_training_reference_with_dvc(repo_root: Path, batch_path: Path) -> d
 
 
 def _evaluate_model_on_arrays(model: Any, images: np.ndarray, labels: np.ndarray) -> dict[str, Any]:
+    # Score one labeled dataset and summarize its prediction distribution.
     probabilities = model.predict(images, verbose=0)
     predicted_labels = np.argmax(probabilities, axis=1)
     confidences = np.max(probabilities, axis=1)
@@ -855,6 +878,7 @@ def _register_challenger_model(
     monitoring_summary: str,
     training_reference: dict[str, Any],
 ) -> dict[str, Any]:
+    # Register the accepted challenger and attach its lineage tags.
     registered_version = mlflow.register_model(
         model_uri=f"runs:/{run_id}/model",
         name=registered_model_name,

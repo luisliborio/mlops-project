@@ -46,6 +46,7 @@ def train_candidates(
     params = load_project_params(params_path)
     runtime_config = _load_runtime_config(repo_root)
 
+    # Resolve data, report, and model output locations.
     resolved_data_root = _resolve_path(
         repo_root,
         data_root or runtime_config.get("DATA_ROOT", "data"),
@@ -54,6 +55,7 @@ def train_candidates(
     resolved_models_dir = resolve_runtime_write_path(repo_root, models_dir)
     manifest_path = resolved_data_root / "interim" / "data_manifest.json"
 
+    # Load the prepared train, validation, and test splits.
     datasets = _load_datasets(
         resolved_data_root,
         train_limit=train_limit,
@@ -61,6 +63,7 @@ def train_candidates(
         test_limit=test_limit,
     )
 
+    # Select either all candidates or one named candidate from params.yaml.
     candidates = list(params["model"]["candidates"])
     if candidate_name is not None:
         candidates = [candidate for candidate in candidates if candidate["name"] == candidate_name]
@@ -68,6 +71,7 @@ def train_candidates(
             available = ", ".join(candidate["name"] for candidate in params["model"]["candidates"])
             raise ValueError(f"Unknown candidate '{candidate_name}'. Available: {available}")
 
+    # Point MLflow to the repo-local tracking store and experiment.
     tracking_uri = _resolve_tracking_uri(
         repo_root,
         runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
@@ -94,6 +98,7 @@ def train_candidates(
     base_seed = int(params["project"]["random_seed"])
     results: list[dict[str, Any]] = []
 
+    # Train each candidate in a separate MLflow run.
     for index, candidate in enumerate(candidates):
         # Reset Keras state before each candidate run.
         keras.backend.clear_session()
@@ -140,6 +145,7 @@ def train_candidates(
                 verbose=2,
             )
 
+            # Score the trained model on validation and test data.
             metrics = _evaluate_model(
                 model=model,
                 history=history.history,
@@ -174,6 +180,7 @@ def train_candidates(
                 }
             )
 
+    # Write comparison artifacts that the next pipeline steps can reuse.
     comparison_csv_path = session_dir / "comparison.csv"
     summary_json_path = session_dir / "summary.json"
     summary_md_path = session_dir / "summary.md"
@@ -224,6 +231,7 @@ def build_cnn_model(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Expose training through a small command-line interface.
     parser = argparse.ArgumentParser(
         description="Train MNIST CNN candidates and log the results to MLflow.",
     )
@@ -294,6 +302,7 @@ def _load_datasets(
     validation_limit: int | None,
     test_limit: int | None,
 ) -> dict[str, np.ndarray]:
+    # Load the processed dataset splits expected by the training pipeline.
     processed_dir = data_root / "processed"
     train_path = processed_dir / "baseline_train.npz"
     validation_path = processed_dir / "baseline_validation.npz"
@@ -322,6 +331,7 @@ def _load_datasets(
 
 
 def _load_split(path: Path, limit: int | None) -> tuple[np.ndarray, np.ndarray]:
+    # Read one saved image split and optionally trim it for quick runs.
     with np.load(path) as batch:
         images = batch["images"].astype(np.float32)
         labels = batch["labels"].astype(np.int64)
@@ -372,6 +382,7 @@ def _evaluate_model(
     x_test: np.ndarray,
     y_test: np.ndarray,
 ) -> dict[str, float]:
+    # Combine training history with fresh validation and test metrics.
     validation_loss, validation_accuracy = model.evaluate(x_validation, y_validation, verbose=0)
     validation_predictions = np.argmax(model.predict(x_validation, verbose=0), axis=1)
     test_loss, test_accuracy = model.evaluate(x_test, y_test, verbose=0)
@@ -397,6 +408,7 @@ def _evaluate_model(
 
 
 def _write_comparison_csv(path: Path, results: list[dict[str, Any]]) -> None:
+    # Save a compact table so candidates are easy to compare.
     fieldnames = [
         "candidate_name",
         "run_id",
@@ -419,6 +431,7 @@ def _write_summary_markdown(
     results: list[dict[str, Any]],
     experiment_name: str,
 ) -> None:
+    # Write a readable training summary for humans.
     best_result = max(results, key=lambda item: item["best_validation_accuracy"])
     lines = [
         "# Training Summary",

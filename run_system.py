@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = REPO_ROOT / "src"
 
+# Allow this root-level runner to import the local package.
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -18,6 +19,7 @@ from mlops_mnist.utils.runtime import load_runtime_config, resolve_runtime_port,
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Start the API, UI, and MLflow UI together for local demos.
     parser = argparse.ArgumentParser(
         description="Start the local MNIST API, Streamlit UI, and MLflow UI together.",
     )
@@ -28,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     runtime_config = load_runtime_config(REPO_ROOT)
 
+    # Build the subprocess commands using optional CLI overrides.
     api_command = [sys.executable, "scripts/run_api.py"]
     if args.api_host is not None:
         api_command.extend(["--host", args.api_host])
@@ -44,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
     )
 
+    # Start MLflow only when another process is not already using its port.
     process_specs = [
         ("API", api_command),
         ("UI", ui_command),
@@ -92,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _shutdown_processes(processes: list[subprocess.Popen[bytes]], exit_code: int) -> int:
+    # Stop child processes cleanly before returning.
     for process in processes:
         if process.poll() is None:
             process.terminate()
@@ -108,6 +113,7 @@ def _shutdown_processes(processes: list[subprocess.Popen[bytes]], exit_code: int
 
 
 def _port_is_open(host: str, port: int) -> bool:
+    # Check whether a local TCP port is already serving a process.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.2)
         return sock.connect_ex((host, port)) == 0

@@ -47,6 +47,7 @@ def promote_best_model(
     params = load_project_params(params_path)
     runtime_config = _load_runtime_config(repo_root)
 
+    # Resolve the registry, artifacts, and verification data locations.
     tracking_uri = _resolve_tracking_uri(
         repo_root,
         runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
@@ -70,6 +71,7 @@ def promote_best_model(
     mlflow.set_experiment(experiment_name)
     client = MlflowClient()
 
+    # Pick the training summary and candidate that will be promoted.
     selected_summary_path = _resolve_summary_path(repo_root, summary_path)
     summary_payload = json.loads(selected_summary_path.read_text(encoding="utf-8"))
     selected_result = _select_result(summary_payload, candidate_name)
@@ -81,12 +83,14 @@ def promote_best_model(
     selected_model_uri = _resolve_selected_model_uri(selected_result)
     fallback_model_path: Path | None = None
     if selected_model_uri is None:
+        # Fall back to the saved local model when the run artifact URI is missing.
         fallback_model_path = _resolve_path(repo_root, selected_result["model_path"])
         if not fallback_model_path.exists():
             raise FileNotFoundError(f"Saved model file not found: {fallback_model_path}")
 
     run_name = f"promote-{selected_result['candidate_name']}-{report_dir.name}"
     with mlflow.start_run(run_name=run_name) as run:
+        # Record why this candidate was selected for promotion.
         params_payload = {
             "selection_rule": "best_validation_accuracy,test_accuracy,validation_macro_f1",
             "selected_candidate": selected_result["candidate_name"],
@@ -117,10 +121,12 @@ def promote_best_model(
 
         registration_model_uri = selected_model_uri
         if registration_model_uri is None:
+            # Re-log the local model so MLflow can register it.
             model = keras.models.load_model(fallback_model_path)
             mlflow.tensorflow.log_model(model, artifact_path="model")
             registration_model_uri = f"runs:/{run.info.run_id}/model"
 
+        # Register the model version and attach the production alias.
         registered_version = mlflow.register_model(
             model_uri=registration_model_uri,
             name=resolved_model_name,
@@ -145,6 +151,7 @@ def promote_best_model(
             value=str(selected_result["candidate_name"]),
         )
 
+        # Verify that the promoted alias can score a small baseline sample.
         verification_payload = _verify_registered_model(
             repo_root=repo_root,
             registered_model_name=resolved_model_name,
@@ -175,6 +182,7 @@ def promote_best_model(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Expose model promotion through a small command-line interface.
     parser = argparse.ArgumentParser(
         description="Register the best trained MNIST model in MLflow and assign a production alias.",
     )
@@ -244,6 +252,7 @@ def _ensure_experiment(experiment_name: str, artifact_root: Path) -> None:
 
 
 def _resolve_summary_path(repo_root: Path, summary_path: str | Path | None) -> Path:
+    # Use the provided summary or fall back to the latest training output.
     if summary_path is not None:
         resolved = _resolve_path(repo_root, summary_path)
         if not resolved.exists():
@@ -261,6 +270,7 @@ def _resolve_summary_path(repo_root: Path, summary_path: str | Path | None) -> P
 
 
 def _select_result(summary_payload: dict[str, Any], candidate_name: str | None) -> dict[str, Any]:
+    # Pick one explicit candidate or the best result by the selection rule.
     results = list(summary_payload.get("results", []))
     if not results:
         raise ValueError("summary.json does not contain any training results")
@@ -290,6 +300,7 @@ def _resolve_selected_model_uri(selected_result: dict[str, Any]) -> str | None:
 
 
 def _wait_for_model_version(client: MlflowClient, model_name: str, version: str | int) -> None:
+    # Poll until MLflow finishes creating the registered model version.
     for _ in range(MODEL_READY_MAX_POLLS):
         model_version = client.get_model_version(model_name, str(version))
         status = model_version.status.upper()
@@ -309,6 +320,7 @@ def _verify_registered_model(
     data_root: Path,
     verify_samples: int,
 ) -> dict[str, Any]:
+    # Score a few baseline examples through the registered alias.
     baseline_test_path = data_root / "processed" / "baseline_test.npz"
     if not baseline_test_path.exists():
         raise FileNotFoundError(f"Missing baseline test split for verification: {baseline_test_path}")
@@ -324,6 +336,7 @@ def _verify_registered_model(
     loaded_model = mlflow.tensorflow.load_model(
         f"models:/{registered_model_name}/{version_info.version}"
     )
+    # Keep a small sample of predictions in the promotion report.
     probabilities = loaded_model.predict(sample_images, verbose=0)
     predicted_labels = np.argmax(probabilities, axis=1)
     confidences = np.max(probabilities, axis=1)

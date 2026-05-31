@@ -125,6 +125,7 @@ _STARTED_PORTS: set[int] = set()
 
 
 def ensure_lifecycle_metrics_server(port: int = DEFAULT_LIFECYCLE_METRICS_PORT) -> bool:
+    # Start the lifecycle metrics server only once per port.
     normalized_port = int(port)
     with _SERVER_LOCK:
         if normalized_port in _STARTED_PORTS:
@@ -138,6 +139,7 @@ def ensure_lifecycle_metrics_server(port: int = DEFAULT_LIFECYCLE_METRICS_PORT) 
 
 
 def reset_lifecycle_metrics() -> None:
+    # Clear all exported lifecycle gauges before rewriting them.
     for gauge in _SCALAR_GAUGES:
         gauge.set(0.0)
     for digit in range(10):
@@ -145,10 +147,12 @@ def reset_lifecycle_metrics() -> None:
 
 
 def sync_lifecycle_state_metrics(state: Mapping[str, Any] | None) -> None:
+    # Map the saved lifecycle state into Prometheus gauge values.
     reset_lifecycle_metrics()
     if not state:
         return
 
+    # Publish the latest unsupervised monitoring values.
     unsupervised_history = list(state.get("unsupervised_history") or [])
     if unsupervised_history:
         latest_unsupervised = unsupervised_history[-1]
@@ -160,6 +164,7 @@ def sync_lifecycle_state_metrics(state: Mapping[str, Any] | None) -> None:
 
     recorded_batches = list(state.get("recorded_batches") or [])
     if recorded_batches:
+        # Publish the latest predicted class counts.
         predicted_labels = list(recorded_batches[-1].get("predicted_labels") or [])
         digit_counts = [0] * 10
         for raw_label in predicted_labels:
@@ -174,6 +179,7 @@ def sync_lifecycle_state_metrics(state: Mapping[str, Any] | None) -> None:
 
     supervised_history = list(state.get("supervised_history") or [])
     if supervised_history:
+        # Publish the latest supervised monitoring values.
         latest_supervised = supervised_history[-1]
         SUPERVISED_LABELED_EXAMPLES.set(float(latest_supervised.get("labeled_examples", 0)))
         SUPERVISED_ACCURACY.set(float(latest_supervised.get("accuracy", 0.0)))
@@ -187,6 +193,7 @@ def sync_lifecycle_state_metrics(state: Mapping[str, Any] | None) -> None:
 
     retraining_history = list(state.get("retraining_history") or [])
     if retraining_history:
+        # Publish the most recent retraining decision.
         latest_retraining = retraining_history[-1]
         RETRAINING_ACCEPTED.set(1.0 if latest_retraining.get("accepted") else 0.0)
         RETRAINING_ADAPTATION_ACCURACY_GAIN.set(
@@ -198,6 +205,7 @@ def sync_lifecycle_state_metrics(state: Mapping[str, Any] | None) -> None:
 
     training_reference_history = list(state.get("training_reference_history") or [])
     if training_reference_history:
+        # Publish the size changes in the promoted training reference.
         latest_training_reference = training_reference_history[-1]
         TRAINING_REFERENCE_EXAMPLES.set(
             float(latest_training_reference.get("training_reference_examples", 0))
@@ -217,6 +225,7 @@ def sync_lifecycle_state_metrics(state: Mapping[str, Any] | None) -> None:
 
 
 def collect_lifecycle_metrics_snapshot() -> dict[str, Any]:
+    # Return the current gauge values for tests and manual checks.
     return {
         "recorded_examples": UNSUPERVISED_RECORDED_EXAMPLES._value.get(),
         "unsupervised_mean_confidence": UNSUPERVISED_MEAN_CONFIDENCE._value.get(),

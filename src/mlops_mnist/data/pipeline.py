@@ -501,6 +501,7 @@ def _resolve_pipeline_paths(
     params_path: Path,
     output_root: str | Path | None,
 ) -> tuple[Path, Path, Path, Path]:
+    # Create the raw, interim, and processed folders used by the pipeline.
     data_root = Path(output_root).resolve() if output_root else params_path.parent / "data"
     raw_dir = data_root / "raw"
     interim_dir = data_root / "interim"
@@ -515,6 +516,7 @@ def _resolve_pipeline_paths(
 def _spawn_rngs(
     seed: int,
 ) -> tuple[np.random.Generator, np.random.Generator, np.random.Generator, np.random.Generator]:
+    # Split one seed into dedicated random generators for each pipeline stage.
     seed_sequence = np.random.SeedSequence(seed)
     generators = [np.random.default_rng(child_seed) for child_seed in seed_sequence.spawn(4)]
     return tuple(generators)
@@ -552,6 +554,7 @@ def _resolve_configured_split_size(
     reference_total: int,
     split_name: str,
 ) -> int:
+    # Support split sizes defined as counts or fractions.
     numeric_size = float(raw_size)
     if numeric_size <= 0:
         raise ValueError(f"{split_name} must be positive")
@@ -571,6 +574,7 @@ def _validate_split_budget(
     available_examples: int,
     requested_batches: dict[str, int],
 ) -> None:
+    # Guard against requesting more examples than one split contains.
     requested_total = sum(requested_batches.values())
     if requested_total <= available_examples:
         return
@@ -621,6 +625,7 @@ def _write_processed_batch(
 
 
 def _load_saved_batch(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    # Read one saved NPZ batch from disk.
     if not path.exists():
         raise FileNotFoundError(f"Missing required batch file: {path}")
 

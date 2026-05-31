@@ -9,6 +9,7 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
+# Allow this wrapper script to import the local package.
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -16,6 +17,7 @@ from mlops_mnist.utils.runtime import load_runtime_config, prepare_runtime_track
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Start MLflow UI with repo-aware tracking paths and ports.
     parser = argparse.ArgumentParser(description="Start the local MLflow UI with repo-aware tracking paths.")
     parser.add_argument("--host", default=None, help="Optional host override.")
     parser.add_argument("--port", type=int, default=None, help="Optional port override.")
@@ -45,4 +47,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Exit with the MLflow UI launcher status code.
     raise SystemExit(main())

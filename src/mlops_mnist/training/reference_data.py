@@ -22,6 +22,7 @@ def resolve_training_reference_metadata(
     repo_root: str | Path,
     version_tags: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Resolve the saved training reference dataset for a model version.
     repo_root = Path(repo_root).resolve()
     resolved_path = _resolve_training_reference_path(repo_root, version_tags)
     if not resolved_path.exists():
@@ -44,6 +45,7 @@ def load_training_reference_data(
     repo_root: str | Path,
     version_tags: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Load the full training reference arrays used by the current production model.
     metadata = resolve_training_reference_metadata(repo_root, version_tags)
     repo_root = Path(repo_root).resolve()
     resolved_path = resolve_repo_bound_path(repo_root, metadata["batch_path"])
@@ -69,6 +71,7 @@ def materialize_training_reference_data(
     output_path: str | Path,
     batch_name: str | None = None,
 ) -> dict[str, Any]:
+    # Save a promoted training reference dataset back to disk.
     repo_root = Path(repo_root).resolve()
     if len(images) != len(labels):
         raise ValueError("Training reference images and labels must have matching lengths")
@@ -91,6 +94,7 @@ def _resolve_training_reference_path(
     repo_root: Path,
     version_tags: Mapping[str, Any] | None,
 ) -> Path:
+    # Use the tagged reference path or fall back to baseline_train.npz.
     tags = version_tags or {}
     tagged_path = tags.get(TRAINING_REFERENCE_PATH_TAG)
     if tagged_path:

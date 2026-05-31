@@ -74,11 +74,13 @@ MODEL_INFO = Gauge(
 )
 
 
+# Validate the request body sent to the prediction endpoint.
 class PredictRequest(BaseModel):
     instances: list[list[list[float]]] = Field(..., description="Batch of 28x28 grayscale images.")
     source: str | None = Field(default=None, description="Optional source label for request logging.")
 
 
+# Keep the loaded model and request logging in one place.
 class InferenceService:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
@@ -102,7 +104,7 @@ class InferenceService:
         self._model_info_labels: dict[str, str] | None = None
 
     def load_model(self) -> None:
-        # Load the current production alias from the local MLflow registry.
+        # Load the model version currently assigned to the production alias.
         _reset_mlflow_runtime_state()
         self.tracking_uri = prepare_local_tracking_uri(
             self.repo_root,
@@ -144,6 +146,7 @@ class InferenceService:
         ).set(1)
 
     def _mark_model_unavailable(self) -> None:
+        # Clear cached model details when no production model is available.
         self.model = None
         self.model_version = None
         self.model_loaded_at = None
@@ -155,11 +158,13 @@ class InferenceService:
         if self.model is None:
             raise RuntimeError("Production model is not loaded")
 
+        # Prepare the batch and run inference.
         prepared_images = _prepare_images(request_payload.instances)
         start_time = time.perf_counter()
         probabilities = self.model.predict(prepared_images, verbose=0)
         latency_ms = (time.perf_counter() - start_time) * 1000.0
 
+        # Summarize model outputs for metrics and the API response.
         predicted_labels = np.argmax(probabilities, axis=1)
         confidences = np.max(probabilities, axis=1)
         request_id = str(uuid4())
@@ -172,6 +177,7 @@ class InferenceService:
         LAST_BATCH_SIZE.set(len(predicted_labels))
         LAST_MEAN_CONFIDENCE.set(float(np.mean(confidences)))
 
+        # Build one response row per image.
         for index in range(len(predicted_labels)):
             prediction_rows.append(
                 {
@@ -182,6 +188,7 @@ class InferenceService:
                 }
             )
 
+        # Save the request summary for monitoring and later analysis.
         log_row = {
             "timestamp": _utc_now(),
             "request_id": request_id,
@@ -211,6 +218,7 @@ class InferenceService:
         }
 
     def health(self) -> dict[str, Any]:
+        # Report the current serving status and loaded model details.
         return {
             "status": "ok" if self.model is not None else "unavailable",
             "tracking_uri": self.tracking_uri,
@@ -231,6 +239,7 @@ def load_project_params(params_path: str | Path) -> dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create the inference service once when the API starts.
     repo_root = Path(__file__).resolve().parents[3]
     service = InferenceService(repo_root)
     service.load_model()
@@ -247,6 +256,7 @@ app = FastAPI(
 
 @app.middleware("http")
 async def collect_http_metrics(request: Request, call_next):
+    # Measure request latency and count errors for all endpoints except /metrics.
     path = request.url.path
     if path == "/metrics":
         return await call_next(request)
@@ -276,23 +286,27 @@ async def collect_http_metrics(request: Request, call_next):
 
 @app.get("/health")
 def healthcheck(request: Request) -> dict[str, Any]:
+    # Return a quick readiness view for the API.
     service = _get_service(request)
     return service.health()
 
 
 @app.get("/model-info")
 def model_info(request: Request) -> dict[str, Any]:
+    # Return the current production model metadata.
     service = _get_service(request)
     return service.health()
 
 
 @app.get("/metrics")
 def metrics() -> Response:
+    # Expose Prometheus metrics in the expected text format.
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/predict")
 def predict(payload: PredictRequest, request: Request) -> dict[str, Any]:
+    # Run inference and translate service errors into HTTP responses.
     service = _get_service(request)
     try:
         return service.predict(payload, client_host=request.client.host if request.client else None)
@@ -304,12 +318,14 @@ def predict(payload: PredictRequest, request: Request) -> dict[str, Any]:
 
 @app.post("/reload-model")
 def reload_model(request: Request) -> dict[str, Any]:
+    # Reload the production alias without restarting the API process.
     service = _get_service(request)
     service.load_model()
     return service.health()
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Allow the API to be started directly from the command line.
     parser = argparse.ArgumentParser(description="Run the MNIST FastAPI inference service.")
     parser.add_argument("--host", default=None, help="Optional API host override.")
     parser.add_argument("--port", type=int, default=None, help="Optional API port override.")
@@ -324,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _get_service(request: Request) -> InferenceService:
+    # Read the service stored during FastAPI startup.
     service = getattr(request.app.state, "service", None)
     if service is None:
         raise HTTPException(status_code=503, detail="Inference service is not ready")
@@ -346,6 +363,7 @@ def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
 
 
 def _prepare_images(instances: list[list[list[float]]]) -> np.ndarray:
+    # Validate image shape and normalize pixel values for the model.
     images = np.asarray(instances, dtype=np.float32)
     if images.ndim != 3:
         raise ValueError("instances must have shape [batch, 28, 28]")
@@ -361,12 +379,14 @@ def _prepare_images(instances: list[list[list[float]]]) -> np.ndarray:
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    # Append one JSON record per line to keep the log stream simple.
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload) + "\n")
 
 
 def _is_expected_missing_model_error(exc: Exception) -> bool:
+    # Treat a missing registered model as an unavailable service, not a crash.
     if not isinstance(exc, MlflowException):
         return False
 

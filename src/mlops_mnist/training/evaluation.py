@@ -50,6 +50,7 @@ def evaluate_registered_model(
     params = load_project_params(params_path)
     runtime_config = _load_runtime_config(repo_root)
 
+    # Resolve the registry, data, and report locations.
     tracking_uri = _resolve_tracking_uri(
         repo_root,
         runtime_config.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"),
@@ -74,6 +75,7 @@ def evaluate_registered_model(
     session_dir = resolved_output_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
     session_dir.mkdir(parents=True, exist_ok=True)
 
+    # Evaluate one batch or a baseline pair of batches.
     batch_specs = _resolve_batch_specs(
         data_root=resolved_data_root,
         batch_name=batch_name,
@@ -83,6 +85,7 @@ def evaluate_registered_model(
     batch_reports = []
 
     for current_batch_name, current_batch_path in batch_specs:
+        # Score the model and attach registry metadata to the report.
         batch_report = _evaluate_batch(
             model=loaded_model,
             batch_path=current_batch_path,
@@ -107,6 +110,7 @@ def evaluate_registered_model(
         batch_report["report_path"] = str(report_path.relative_to(repo_root))
         batch_reports.append(batch_report)
 
+    # Save one summary that later monitoring steps can read back.
     summary_payload = {
         "registered_model_name": resolved_model_name,
         "alias": alias,
@@ -164,6 +168,7 @@ def run_training_registry_smoke(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Expose model evaluation through a small command-line interface.
     parser = argparse.ArgumentParser(
         description="Evaluate the current production model on labeled MNIST batches.",
     )
@@ -223,6 +228,7 @@ def _resolve_batch_specs(
     batch_path: str | Path | None,
     freeze_baseline: bool,
 ) -> list[tuple[str, Path]]:
+    # Decide which batch files should be scored in this run.
     if freeze_baseline:
         return [
             (current_batch_name, data_root / "processed" / f"{current_batch_name}.npz")
@@ -246,6 +252,7 @@ def _evaluate_batch(
     max_samples: int | None,
     use_clean_labels: bool,
 ) -> dict[str, Any]:
+    # Score one labeled batch and summarize the prediction distribution.
     if not batch_path.exists():
         raise FileNotFoundError(f"Batch file not found: {batch_path}")
 
@@ -276,6 +283,7 @@ def _evaluate_batch(
 
 
 def _resolve_lifecycle_summary(repo_root: Path, summary_path: str | Path | None) -> Path:
+    # Use the provided summary path or fall back to the latest lifecycle artifact.
     if summary_path is not None:
         resolved = _resolve_path(repo_root, summary_path)
         if not resolved.exists():
@@ -295,6 +303,7 @@ def _resolve_lifecycle_summary(repo_root: Path, summary_path: str | Path | None)
 
 
 def _extract_summary_run_ids(summary_payload: dict[str, Any]) -> set[str]:
+    # Collect every run id referenced by a lifecycle summary.
     run_ids = {str(result["run_id"]) for result in summary_payload.get("results", [])}
 
     promotion = summary_payload.get("promotion")
@@ -309,6 +318,7 @@ def _extract_summary_run_ids(summary_payload: dict[str, Any]) -> set[str]:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    # Persist JSON artifacts with stable formatting.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 

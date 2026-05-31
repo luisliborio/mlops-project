@@ -67,14 +67,17 @@ def reset_application_state(
     params_path: str | Path = "params.yaml",
     seed_path: str | Path = APP_RESET_SEED_PATH,
 ) -> dict[str, Any]:
+    # Restore the seeded production model and clear generated runtime state.
     repo_root = Path(repo_root).resolve()
     params_path = _resolve_path(repo_root, params_path)
     seed = _load_reset_seed(repo_root, seed_path)
 
+    # Remove generated artifacts before recreating the baseline state.
     _reset_mlflow_runtime_state()
     _clear_local_tracking_database(repo_root)
     removed_paths = _clear_generated_state(repo_root)
     mlflow_reset = _bootstrap_initial_mlflow_state(repo_root, params_path, seed)
+    # Recreate the lifecycle session expected by the UI.
     lifecycle_state = reset_lifecycle_state(
         repo_root=repo_root,
         batch_name=str(seed["default_batch_name"]),
@@ -111,6 +114,7 @@ def reset_to_pre_setup_state(
     repo_root: str | Path,
     dvc_path: str | Path = "dvc.yaml",
 ) -> dict[str, Any]:
+    # Remove generated files so the project returns to its empty setup state.
     repo_root = Path(repo_root).resolve()
 
     _reset_mlflow_runtime_state()
@@ -144,6 +148,7 @@ def ensure_initial_production_alias(
     params_path: str | Path = "params.yaml",
     seed_path: str | Path = APP_RESET_SEED_PATH,
 ) -> dict[str, Any] | None:
+    # Create the initial production alias only when the registry is still empty.
     repo_root = Path(repo_root).resolve()
     params_path = _resolve_path(repo_root, params_path)
     seed = _load_reset_seed(repo_root, seed_path)
@@ -181,6 +186,7 @@ def _bootstrap_initial_mlflow_state(
     params_path: Path,
     seed: dict[str, Any],
 ) -> dict[str, Any]:
+    # Register the seeded model as production version 1.
     params = _load_project_params(params_path)
     runtime_config = _load_runtime_config(repo_root)
     tracking_uri = _resolve_tracking_uri(
@@ -201,6 +207,7 @@ def _bootstrap_initial_mlflow_state(
     if not seed_model_path.exists():
         raise FileNotFoundError(f"Initial seed model not found: {seed_model_path}")
 
+    # Attach the saved training reference metadata to the new model version.
     training_reference = resolve_training_reference_metadata(
         repo_root,
         {
@@ -222,6 +229,7 @@ def _bootstrap_initial_mlflow_state(
 
     run_name = f"restore-initial-production-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     with mlflow.start_run(run_name=run_name) as run:
+        # Log the reset source before re-registering the seed model.
         mlflow.log_params(
             {
                 "reset_seed_model_path": str(seed_model_path.relative_to(repo_root)),
@@ -235,6 +243,7 @@ def _bootstrap_initial_mlflow_state(
         )
         mlflow.tensorflow.log_model(model, artifact_path="model")
 
+        # Recreate the production alias and lineage tags.
         registered_version = mlflow.register_model(
             model_uri=f"runs:/{run.info.run_id}/model",
             name=registered_model_name,
@@ -305,6 +314,7 @@ def _bootstrap_initial_mlflow_state(
 
 
 def _clear_generated_state(repo_root: Path, extra_paths: tuple[Path, ...] = ()) -> list[str]:
+    # Remove generated folders and leftover MLflow artifact directories.
     removed_paths = _clear_repo_paths(repo_root, GENERATED_PATHS + extra_paths)
 
     artifacts_root = (repo_root / "artifacts").resolve()
@@ -337,6 +347,7 @@ def _clear_local_tracking_database(repo_root: Path) -> bool:
 
 
 def _resolve_sqlite_database_path(tracking_uri: str) -> Path | None:
+    # Support both absolute and relative sqlite tracking URIs.
     if tracking_uri.startswith("sqlite:////"):
         return Path(tracking_uri.removeprefix("sqlite:///"))
 
@@ -347,6 +358,7 @@ def _resolve_sqlite_database_path(tracking_uri: str) -> Path | None:
 
 
 def _clear_sqlite_tables(database_path: Path) -> None:
+    # Clear tracked rows but keep the sqlite schema in place.
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
         table_names = [
@@ -364,6 +376,7 @@ def _clear_sqlite_tables(database_path: Path) -> None:
 
 
 def _clear_repo_paths(repo_root: Path, relative_paths: list[Path] | tuple[Path, ...]) -> list[str]:
+    # Remove a list of repo-relative paths and report what changed.
     removed_paths: list[str] = []
     for relative_path in relative_paths:
         candidate = (repo_root / relative_path).resolve()
@@ -380,6 +393,7 @@ def _load_reset_seed(repo_root: Path, seed_path: str | Path) -> dict[str, Any]:
 
 
 def _reset_mlflow_runtime_state() -> None:
+    # End active runs before clearing cached MLflow state.
     while mlflow.active_run() is not None:
         mlflow.end_run()
 
@@ -393,6 +407,7 @@ def _reset_mlflow_runtime_state() -> None:
     if hasattr(fluent, "_active_experiment_id"):
         fluent._active_experiment_id = None
 
+    # Clear cached tracking stores so later calls reopen fresh connections.
     store_registry = getattr(_tracking_service.utils, "_tracking_store_registry", None)
     cache_clear = getattr(getattr(store_registry, "_get_store_with_resolved_uri", None), "cache_clear", None)
     if callable(cache_clear):
@@ -415,6 +430,7 @@ def _reset_mlflow_runtime_state() -> None:
 
 
 def _dispose_store_engine(store_getter: Any) -> None:
+    # Dispose a cached SQLAlchemy engine when one is available.
     if not callable(store_getter):
         return
 
@@ -430,6 +446,7 @@ def _dispose_store_engine(store_getter: Any) -> None:
 
 
 def _reset_thread_local_or_collection(state_holder: Any, default: Any) -> None:
+    # Reset either a thread-local holder or a simple mutable collection.
     if state_holder is None:
         return
 
@@ -494,6 +511,7 @@ def _is_missing_production_alias_error(exc: Exception) -> bool:
 
 
 def _remove_path(path: Path) -> bool:
+    # Remove a file or directory only when it exists.
     if not path.exists():
         return False
 

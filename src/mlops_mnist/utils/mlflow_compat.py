@@ -41,6 +41,7 @@ def prepare_local_tracking_uri(repo_root: Path, tracking_uri: str) -> str:
 
 
 def resolve_runtime_write_path(repo_root: Path, raw_path: str | Path) -> Path:
+    # Prefer the original path, but fall back to .runtime when it is not writable.
     repo_root = repo_root.resolve()
     path = Path(raw_path)
     resolved_path = path if path.is_absolute() else (repo_root / path).resolve()
@@ -58,6 +59,7 @@ def resolve_runtime_write_path(repo_root: Path, raw_path: str | Path) -> Path:
 
 
 def resolve_repo_bound_path(repo_root: Path, raw_path: str | Path) -> Path:
+    # Rebind stored absolute paths to the current repo when possible.
     repo_root = repo_root.resolve()
     path = Path(raw_path)
 
@@ -80,13 +82,16 @@ def resolve_repo_bound_path(repo_root: Path, raw_path: str | Path) -> Path:
 
 
 def serialize_repo_bound_path(repo_root: Path, raw_path: str | Path) -> str:
+    # Store repo-local paths relative to the current workspace root.
     resolved_path = resolve_repo_bound_path(repo_root, raw_path)
     try:
         return str(resolved_path.relative_to(repo_root.resolve()))
     except ValueError:
         return str(resolved_path)
 
+
 def resolve_runtime_model_artifact_path(repo_root: Path, model_source: str) -> Path | None:
+    # Map a registry model id to its local copied artifact folder.
     if not model_source.startswith("models:/m-"):
         return None
 
@@ -98,6 +103,7 @@ def resolve_runtime_model_artifact_path(repo_root: Path, model_source: str) -> P
 
 
 def _rewrite_tracking_store_paths(repo_root: Path, database_path: Path) -> int:
+    # Rewrite stored MLflow paths so they point at the current repo copy.
     updated_rows = 0
 
     with sqlite3.connect(database_path) as connection:
@@ -130,6 +136,7 @@ def _rewrite_table_column(
     table_name: str,
     column_name: str,
 ) -> int:
+    # Update one MLflow table column when it contains stale paths.
     try:
         rows = connection.execute(f"SELECT rowid, {column_name} FROM {table_name}").fetchall()
     except sqlite3.Error:
@@ -164,6 +171,7 @@ def _rewrite_tracking_value(
     column_name: str,
     raw_value: str,
 ) -> str:
+    # Choose the right rewrite rule for each tracked MLflow path field.
     runtime_root = (repo_root / RUNTIME_ROOT_RELATIVE_PATH).resolve()
 
     if (table_name, column_name) == ("experiments", "artifact_location"):
@@ -179,6 +187,7 @@ def _rewrite_tracking_value(
 
 
 def _rewrite_repo_bound_value(raw_value: str, repo_root: Path, target_root: Path) -> str:
+    # Replace an old repo root in a stored path with the current repo root.
     extracted_path = _extract_filesystem_path(raw_value)
     if extracted_path is None:
         return raw_value
@@ -199,6 +208,7 @@ def _rewrite_repo_bound_value(raw_value: str, repo_root: Path, target_root: Path
 
 
 def _prepare_runtime_model_artifact(repo_root: Path, raw_value: str) -> str:
+    # Copy model artifacts to a writable location before serving them.
     resolved_value = _rewrite_repo_bound_value(raw_value, repo_root, repo_root)
     source_path = _extract_filesystem_path(resolved_value)
     if source_path is None or not source_path.exists():
@@ -216,6 +226,7 @@ def _prepare_runtime_model_artifact(repo_root: Path, raw_value: str) -> str:
 
 
 def _rewrite_model_metadata(artifact_path: Path) -> None:
+    # Update the MLmodel file so its artifact path matches the copied location.
     mlmodel_path = artifact_path / "MLmodel"
     if not mlmodel_path.exists():
         return
@@ -233,6 +244,7 @@ def _rewrite_model_metadata(artifact_path: Path) -> None:
 
 
 def _extract_filesystem_path(raw_value: str) -> Path | None:
+    # Parse filesystem paths from file URIs or plain absolute paths.
     if raw_value.startswith("file://"):
         parsed = urlparse(raw_value)
         return Path(unquote(parsed.path))
@@ -244,6 +256,7 @@ def _extract_filesystem_path(raw_value: str) -> Path | None:
 
 
 def _detect_previous_repo_root(path: Path, repo_name: str) -> Path | None:
+    # Find the last matching repo directory inside an old absolute path.
     matching_indexes = [index for index, part in enumerate(path.parts) if part == repo_name]
     if not matching_indexes:
         return None
@@ -253,11 +266,13 @@ def _detect_previous_repo_root(path: Path, repo_name: str) -> Path | None:
 
 
 def _path_is_writable(path: Path) -> bool:
+    # Check writability against the path itself or its nearest existing parent.
     existing_path = path if path.exists() else _nearest_existing_parent(path)
     return os.access(existing_path, os.W_OK)
 
 
 def _nearest_existing_parent(path: Path) -> Path:
+    # Walk up until a real parent path exists.
     current_path = path
     while not current_path.exists() and current_path != current_path.parent:
         current_path = current_path.parent

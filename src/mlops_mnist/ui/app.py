@@ -70,6 +70,7 @@ DEFAULT_BATCH_OPTIONS = [
 
 
 def main() -> None:
+    # Build the Streamlit shell and route the user to the selected view.
     st.set_page_config(page_title="MNIST Drift Lab", page_icon="/", layout="wide")
     repo_root = Path(__file__).resolve().parents[3]
     params = load_project_params(repo_root / "params.yaml")
@@ -119,6 +120,7 @@ def main() -> None:
 
 
 def _render_api_status(health: dict[str, Any] | None) -> None:
+    # Show the current API and production model status in the sidebar area.
     if health is None:
         st.warning("API is not reachable. Start the FastAPI service when you want live predictions.")
         return
@@ -142,6 +144,7 @@ def _render_initial_setup(
     setup_state: dict[str, Any],
     health: dict[str, Any] | None,
 ) -> None:
+    # Collect the actions needed to build the first production model.
     st.subheader("Initial Setup")
     st.caption("Control room for starting `dvc repro`.")
     st.caption("Run data preparation, launch the initial competitor training, promote the winner, and hard reset.")
@@ -226,6 +229,7 @@ def _render_initial_setup(
 
 
 def _render_setup_required(setup_state: dict[str, Any]) -> None:
+    # Block prediction views until the initial pipeline is ready.
     st.subheader("Setup Required")
     st.info("Complete Initial Setup before using the prediction and lifecycle views.")
     if setup_state.get("missing_data_outputs"):
@@ -237,6 +241,7 @@ def _render_setup_required(setup_state: dict[str, Any]) -> None:
 
 
 def _render_sample_prediction(repo_root: Path, api_base_url: str) -> None:
+    # Let the user score one stored dataset example through the API.
     st.subheader("Predict One Dataset Sample")
     batch_name = st.selectbox("Source batch", options=DEFAULT_BATCH_OPTIONS, key="sample_batch")
     batch = _load_batch(repo_root, batch_name)
@@ -266,6 +271,7 @@ def _render_sample_prediction(repo_root: Path, api_base_url: str) -> None:
 
 
 def _render_upload_prediction(api_base_url: str) -> None:
+    # Let the user upload one image and send it to the API.
     st.subheader("Predict Uploaded Image")
     uploaded_file = st.file_uploader("Upload a digit image", type=["png", "jpg", "jpeg"], key="upload")
     if uploaded_file is None:
@@ -294,6 +300,7 @@ def _render_lifecycle_simulation(
     params: dict[str, Any],
     monitoring_status: dict[str, Any] | None = None,
 ) -> None:
+    # Simulate incoming batches, delayed labels, monitoring, and retraining.
     st.subheader("Lifecycle Simulation")
     st.caption(
         "Each inference click is one simulated time step. Record off means preview only. "
@@ -328,6 +335,7 @@ def _render_lifecycle_simulation(
     batch_size = st.slider(**batch_slider_kwargs)
     batch = _load_batch(repo_root, batch_name)
 
+    # Reset the stream cursor when the incoming batch source changes.
     if batch_name != state.get("active_batch_name"):
         if not state.get("baseline_reference"):
             baseline_reference = ensure_baseline_reference(
@@ -377,6 +385,7 @@ def _render_lifecycle_simulation(
     pending_labeled = count_pending_labeled_samples(state)
     ready_labeled = count_ready_labeled_samples(state)
 
+    # Expose the lifecycle controls in the same order as the workflow.
     control_col1, control_col2, control_col3, control_col4 = st.columns(4)
     run_next_clicked = control_col1.button(
         "Run Next Batch",
@@ -445,6 +454,7 @@ def _default_api_base_url(runtime_config: dict[str, str]) -> str:
 
 
 def _initialize_lifecycle_monitoring(repo_root: Path, runtime_config: dict[str, str]) -> dict[str, Any]:
+    # Start the Prometheus exporter and build links for the monitoring tools.
     lifecycle_state = load_lifecycle_state(repo_root)
     exporter_port = _resolve_runtime_port(
         runtime_config,
@@ -472,6 +482,7 @@ def _resolve_runtime_port(runtime_config: dict[str, str], key: str, default: int
 
 @st.cache_data(show_spinner=False)
 def _load_batch(repo_root: Path, batch_name: str) -> dict[str, Any]:
+    # Cache processed batches so UI interactions stay responsive.
     batch_path = repo_root / "data" / "processed" / f"{batch_name}.npz"
     with np.load(batch_path) as batch:
         payload = {
@@ -483,6 +494,7 @@ def _load_batch(repo_root: Path, batch_name: str) -> dict[str, Any]:
 
 
 def _get_api_health(api_base_url: str) -> dict[str, Any] | None:
+    # Query the API health endpoint and ignore connection errors.
     try:
         response = requests.get(f"{api_base_url}/health", timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
@@ -492,6 +504,7 @@ def _get_api_health(api_base_url: str) -> dict[str, Any] | None:
 
 
 def _reload_api_model(api_base_url: str) -> dict[str, Any] | None:
+    # Ask the API to reload the current production alias.
     try:
         response = requests.post(f"{api_base_url}/reload-model", timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
@@ -505,6 +518,7 @@ def _predict_instances(
     instances: list[np.ndarray] | list[list[list[float]]],
     source: str,
 ) -> dict[str, Any] | None:
+    # Convert images to JSON-friendly lists and send them to the API.
     payload_instances = []
     for image in instances:
         if isinstance(image, np.ndarray):
@@ -531,6 +545,7 @@ def _render_lifecycle_status_cards(
     total_examples: int,
     min_recent_samples: int,
 ) -> None:
+    # Summarize the current lifecycle state above the control buttons.
     next_slice = compute_cursor_slice(
         cursor=int(state.get("cursor", 0)),
         batch_size=int(batch_size),
@@ -586,6 +601,7 @@ def _handle_run_next_batch(
     batch: dict[str, Any],
     record_mode: bool,
 ) -> None:
+    # Advance the simulated stream and optionally record the new batch.
     previous_cursor = int(state.get("cursor", 0))
     previous_step = int(state.get("step_counter", 0))
     previous_exhausted = bool(state.get("stream_exhausted", False))
@@ -624,6 +640,7 @@ def _handle_run_next_batch(
     record_preview_batch(state, preview_payload)
 
     if record_mode:
+        # Compare the new batch against the baseline reference for unsupervised alerts.
         baseline_reference = state.get("baseline_reference") or ensure_baseline_reference(
             repo_root=repo_root,
             params_path=repo_root / "params.yaml",
@@ -694,6 +711,7 @@ def _handle_run_next_batch(
 
 
 def _handle_label_action(repo_root: Path, state: dict[str, Any], params: dict[str, Any]) -> None:
+    # Reveal delayed labels and run supervised monitoring on the recorded buffer.
     from mlops_mnist.ui.lifecycle import label_pending_batches
 
     labeled_now = label_pending_batches(state)
@@ -731,6 +749,7 @@ def _handle_label_action(repo_root: Path, state: dict[str, Any], params: dict[st
 
 
 def _handle_clear_labeled_action(repo_root: Path, state: dict[str, Any]) -> None:
+    # Drop labeled samples after monitoring or retraining is complete.
     cleared_samples = clear_labeled_batches(state)
     if cleared_samples <= 0:
         st.info("There are no labeled samples to clean from the lifecycle buffer.")
@@ -752,6 +771,7 @@ def _handle_retraining_action(
     state: dict[str, Any],
     params: dict[str, Any],
 ) -> None:
+    # Launch retraining once enough labeled lifecycle data is available.
     min_recent_samples = int(params["retraining"]["min_recent_samples"])
     ready_labeled = count_ready_labeled_samples(state)
     if ready_labeled < min_recent_samples:
@@ -832,6 +852,7 @@ def _handle_retraining_action(
 
 
 def _handle_initial_dvc_repro(repo_root: Path) -> None:
+    # Run the DVC pipeline that creates the baseline data artifacts.
     with st.spinner("Running dvc repro to create the baseline data and scenarios..."):
         result = run_setup_command(
             repo_root,
@@ -850,6 +871,7 @@ def _handle_initial_dvc_repro(repo_root: Path) -> None:
 
 
 def _handle_initial_training_and_promotion(repo_root: Path, api_base_url: str) -> None:
+    # Train the initial candidates, then promote the winner.
     with st.spinner("Training the initial CNN candidates..."):
         training_result = run_setup_command(
             repo_root,
@@ -902,6 +924,7 @@ def _handle_initial_training_and_promotion(repo_root: Path, api_base_url: str) -
 
 
 def _handle_pre_setup_reset(repo_root: Path, api_base_url: str) -> None:
+    # Remove generated setup artifacts and return to the empty state.
     with st.spinner("Removing generated data, models, and MLflow state..."):
         reset_to_pre_setup_state(repo_root=repo_root, dvc_path=repo_root / "dvc.yaml")
 
@@ -929,6 +952,7 @@ def _build_preview_payload(
     latency_ms: float,
     labels_hidden: bool,
 ) -> dict[str, Any]:
+    # Build the preview table shown after each simulated inference step.
     predicted_labels = [int(row["predicted_label"]) for row in prediction["predictions"]]
     confidences = [float(row["confidence"]) for row in prediction["predictions"]]
     accuracy = float(np.mean(np.asarray(predicted_labels) == labels)) if len(labels) else 0.0
@@ -964,6 +988,7 @@ def _build_preview_payload(
 
 
 def _refresh_latest_preview_labels(repo_root: Path, state: dict[str, Any]) -> bool:
+    # Reveal true labels in the latest preview after delayed labeling completes.
     preview_payload = state.get("latest_preview")
     if not preview_payload or not preview_payload.get("labels_hidden"):
         return False
@@ -1004,6 +1029,7 @@ def _refresh_latest_preview_labels(repo_root: Path, state: dict[str, Any]) -> bo
 
 
 def _render_latest_preview(preview_payload: dict[str, Any] | None) -> None:
+    # Show the most recent simulated batch with metrics and example rows.
     st.markdown("#### Latest Batch Result")
     if preview_payload is None:
         st.caption("Click Run Next Batch to simulate the next incoming slice of data.")

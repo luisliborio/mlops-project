@@ -30,6 +30,7 @@ def create_lifecycle_state(
     baseline_reference: dict[str, Any] | None = None,
     record_mode: bool = False,
 ) -> dict[str, Any]:
+    # Create the default lifecycle session stored by the UI.
     return {
         "schema_version": 1,
         "active_batch_name": batch_name,
@@ -54,6 +55,7 @@ def create_lifecycle_state(
 
 
 def load_lifecycle_state(repo_root: str | Path) -> dict[str, Any]:
+    # Load the saved lifecycle state or create a new empty session.
     repo_root = Path(repo_root)
     state_path = lifecycle_state_path(repo_root)
     if not state_path.exists():
@@ -65,6 +67,7 @@ def load_lifecycle_state(repo_root: str | Path) -> dict[str, Any]:
 
 
 def save_lifecycle_state(repo_root: str | Path, state: dict[str, Any]) -> Path:
+    # Persist the lifecycle session as JSON.
     repo_root = Path(repo_root)
     state_path = lifecycle_state_path(repo_root)
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +83,7 @@ def reset_lifecycle_state(
     baseline_reference: dict[str, Any] | None = None,
     record_mode: bool = False,
 ) -> dict[str, Any]:
+    # Start a fresh lifecycle session and log the reset event.
     state = create_lifecycle_state(
         batch_name=batch_name,
         batch_size=batch_size,
@@ -102,6 +106,7 @@ def switch_lifecycle_batch(
     batch_name: str,
     batch_size: int,
 ) -> dict[str, Any]:
+    # Switch to a new incoming batch source without deleting history.
     previous_batch_name = state.get("active_batch_name") or "none"
     state["active_batch_name"] = batch_name
     state["batch_size"] = int(batch_size)
@@ -126,6 +131,7 @@ def lifecycle_state_path(repo_root: str | Path) -> Path:
 
 
 def compute_cursor_slice(cursor: int, batch_size: int, total_examples: int) -> dict[str, Any]:
+    # Compute the next slice of the simulated incoming stream.
     if total_examples < 0:
         raise ValueError("total_examples must be non-negative")
     if batch_size <= 0:
@@ -151,6 +157,7 @@ def compute_cursor_slice(cursor: int, batch_size: int, total_examples: int) -> d
 
 
 def advance_stream_cursor(state: dict[str, Any], total_examples: int, batch_size: int) -> dict[str, Any]:
+    # Advance the lifecycle cursor and record the current stream step.
     slice_payload = compute_cursor_slice(
         cursor=int(state.get("cursor", 0)),
         batch_size=int(batch_size),
@@ -171,6 +178,7 @@ def advance_stream_cursor(state: dict[str, Any], total_examples: int, batch_size
 
 
 def append_event_log(state: dict[str, Any], level: str, message: str) -> None:
+    # Append one timestamped lifecycle event.
     state.setdefault("event_log", []).append(
         {
             "timestamp": _utc_now(),
@@ -196,6 +204,7 @@ def append_recorded_batch(
     alerts: list[str],
     clean_labels_available: bool,
 ) -> dict[str, Any]:
+    # Store one recorded batch and update unsupervised monitoring history.
     record = {
         "step": int(step),
         "batch_name": batch_name,
@@ -300,6 +309,7 @@ def materialize_recorded_batch(
     output_path: str | Path,
     labeled_only: bool = True,
 ) -> dict[str, Any]:
+    # Combine recorded lifecycle slices into one NPZ batch on disk.
     repo_root = Path(repo_root)
     records = [
         record
@@ -379,6 +389,7 @@ def ensure_baseline_reference(
     baseline_snapshot_path: str | Path | None = None,
     force_refresh: bool = False,
 ) -> dict[str, Any]:
+    # Reuse a saved baseline snapshot or create a fresh one.
     repo_root = Path(repo_root)
     snapshot_payload: dict[str, Any]
 
@@ -400,6 +411,7 @@ def ensure_baseline_reference(
 
 
 def compute_js_divergence(reference_values: np.ndarray, current_values: np.ndarray) -> float:
+    # Measure how different two normalized distributions are.
     reference = np.asarray(reference_values, dtype=np.float64)
     current = np.asarray(current_values, dtype=np.float64)
     reference = reference / np.clip(reference.sum(), 1e-12, None)
@@ -417,6 +429,7 @@ def compute_js_divergence(reference_values: np.ndarray, current_values: np.ndarr
 
 
 def compute_histogram_js_divergence(reference_images: np.ndarray, current_images: np.ndarray, bins: int = 32) -> float:
+    # Compare image intensity histograms with Jensen-Shannon divergence.
     reference_hist, _ = np.histogram(reference_images.reshape(-1), bins=bins, range=(0.0, 1.0))
     current_hist, _ = np.histogram(current_images.reshape(-1), bins=bins, range=(0.0, 1.0))
     return compute_js_divergence(reference_hist, current_hist)
@@ -428,6 +441,7 @@ def summarize_unsupervised_alerts(
     current_mean_confidence: float,
     histogram_js_divergence: float,
 ) -> dict[str, Any]:
+    # Convert unsupervised drift measurements into alert names.
     confidence_drop = float(baseline_mean_confidence - current_mean_confidence)
     alerts = []
     if confidence_drop > float(thresholds["max_confidence_drop"]):
@@ -447,6 +461,7 @@ def run_lifecycle_monitoring(
     state: dict[str, Any],
     params_path: str | Path = "params.yaml",
 ) -> dict[str, Any]:
+    # Run supervised monitoring on the labeled lifecycle buffer.
     if count_ready_labeled_samples(state) <= 0:
         raise ValueError("No labeled lifecycle data is ready for monitoring")
 
@@ -476,6 +491,7 @@ def run_lifecycle_monitoring(
         output_dir="artifacts/ui_lifecycle/monitoring",
     )
 
+    # Save the new supervised metrics back into the lifecycle state.
     state["latest_monitoring_summary_path"] = monitoring_summary["summary_path"]
     state["current_alerts"] = list(monitoring_summary.get("alerts", []))
     state.setdefault("supervised_history", []).append(
@@ -503,6 +519,7 @@ def run_lifecycle_retraining(
     params_path: str | Path = "params.yaml",
     force_retrain: bool = False,
 ) -> dict[str, Any]:
+    # Materialize the labeled buffer and run the retraining workflow on it.
     if count_ready_labeled_samples(state) <= 0:
         raise ValueError("No labeled lifecycle data is ready for retraining")
 
@@ -530,6 +547,7 @@ def run_lifecycle_retraining(
         force_retrain=force_retrain,
     )
 
+    # Append the retraining outcome to the UI history tables.
     state["latest_retraining_summary_path"] = retraining_summary["summary_path"]
     for entry in state.setdefault("retraining_history", []):
         entry.pop("accuracy_gain", None)
@@ -555,6 +573,7 @@ def run_lifecycle_retraining(
     )
 
     if retraining_summary.get("promotion"):
+        # Refresh the baseline snapshot after a successful promotion.
         state.setdefault("training_reference_history", []).append(
             {
                 "step": int(state.get("step_counter", 0)),
@@ -589,6 +608,7 @@ def run_lifecycle_retraining(
 
 
 def _extract_baseline_reference(repo_root: Path, snapshot_payload: dict[str, Any]) -> dict[str, Any]:
+    # Pull the baseline_test report and its training reference metadata.
     for report in snapshot_payload.get("reports", []):
         if report["batch_name"] == "baseline_test":
             reference_data = snapshot_payload.get("production_reference_data")
@@ -621,6 +641,7 @@ def _resolve_path(repo_root: Path, raw_path: str | Path) -> Path:
 
 
 def _normalize_lifecycle_state_paths(repo_root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    # Rebind stored paths so the state still works after repo moves.
     for key in ("baseline_snapshot_path", "latest_monitoring_summary_path", "latest_retraining_summary_path"):
         if state.get(key):
             state[key] = serialize_repo_bound_path(repo_root, state[key])
